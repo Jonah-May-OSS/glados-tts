@@ -1,6 +1,7 @@
 import re
+import logging
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Tuple
 
 from unidecode import unidecode
 
@@ -9,101 +10,123 @@ from .symbols import phonemes_set
 
 from dp.phonemizer import Phonemizer
 
-# Regular expression matching whitespace
+# -----------------------------------------------------------------------------
+# Logging
+# -----------------------------------------------------------------------------
+
+_LOGGER = logging.getLogger(__name__)
+
+# -----------------------------------------------------------------------------
+# Regex helpers
+# -----------------------------------------------------------------------------
 
 _whitespace_re = re.compile(r"\s+")
 
-# List of (regular expression, replacement) pairs for abbreviations
+# -----------------------------------------------------------------------------
+# Abbreviation patterns (specific → generic)
+# -----------------------------------------------------------------------------
 
-_abbreviations = []
-for abbrev, full_form in [
-    ("°F", "degrees Fahrenheit"),
-    ("°C", "degrees Celsius"),
-    ("deg F", "degrees Fahrenheit"),
-    ("deg C", "degrees Celsius"),
-    ("mrs", "misses"),
-    ("mr", "mister"),
-    ("dr", "doctor"),
-    ("st", "saint"),
-    ("co", "company"),
-    ("jr", "junior"),
-    ("maj", "major"),
-    ("gen", "general"),
-    ("drs", "doctors"),
-    ("rev", "reverend"),
-    ("lt", "lieutenant"),
-    ("hon", "honorable"),
-    ("sgt", "sergeant"),
-    ("capt", "captain"),
-    ("esq", "esquire"),
-    ("ltd", "limited"),
-    ("col", "colonel"),
-    ("ft", "fort"),
+_abbreviations: List[Tuple[re.Pattern, str]] = []
+
+for pattern, repl in [
+    # Textual degree forms (symbolic handled earlier)
+    (r"\bdeg\s*F\b", "degrees Fahrenheit"),
+    (r"\bdeg\s*C\b", "degrees Celsius"),
+    (r"\bdeg\b", "degrees"),
+    # Measurement units – only when they directly follow a number
+    (r"(?<=\d)\s*ft\b\.?", " feet"),
+    (r"(?<=\d)\s*in\b\.?", " inches"),
+    (r"(?<=\d)\s*mi\b\.?", " miles"),
+    (r"(?<=\d)\s*km\b\.?", " kilometers"),
+    (r"(?<=\d)\s*mm\b\.?", " millimeters"),
+    (r"(?<=\d)\s*cm\b\.?", " centimeters"),
+    (r"(?<=\d)\s*m\b\.?", " meters"),
+    (r"(?<=\d)\s*kg\b\.?", " kilograms"),
+    (r"(?<=\d)\s*g\b\.?", " grams"),
+    (r"(?<=\d)\s*oz\b\.?", " ounces"),
+    (r"(?<=\d)\s*lb\b\.?", " pounds"),
+    (r"(?<=\d)\s*hr\b\.?", " hours"),
+    (r"(?<=\d)\s*min\b\.?", " minutes"),
+    (r"(?<=\d)\s*sec\b\.?", " seconds"),
+    # Honorifics and titles
+    (r"\bmrs?\.?(?=\b)", "misses"),
+    (r"\bmr\.?(?=\b)", "mister"),
+    (r"\bdr\.?(?=\b)", "doctor"),
+    (r"\bst\.?(?=\b)", "saint"),
+    (r"\bco\.?(?=\b)", "company"),
+    (r"\bjr\.?(?=\b)", "junior"),
+    (r"\bmaj\.?(?=\b)", "major"),
+    (r"\bgen\.?(?=\b)", "general"),
+    (r"\bdrs\.?(?=\b)", "doctors"),
+    (r"\brev\.?(?=\b)", "reverend"),
+    (r"\blt\.?(?=\b)", "lieutenant"),
+    (r"\bhon\.?(?=\b)", "honorable"),
+    (r"\bsgt\.?(?=\b)", "sergeant"),
+    (r"\bcapt\.?(?=\b)", "captain"),
+    (r"\besq\.?(?=\b)", "esquire"),
+    (r"\bltd\.?(?=\b)", "limited"),
+    (r"\bcol\.?(?=\b)", "colonel"),
 ]:
-    # Match abbreviation as a standalone word, optionally followed by a period
-    pattern = re.compile(rf"\b{re.escape(abbrev)}\b\.?", re.IGNORECASE)
-    _abbreviations.append((pattern, full_form))
+    _abbreviations.append((re.compile(pattern, re.IGNORECASE), repl))
+# -----------------------------------------------------------------------------
+# Helper functions
+# -----------------------------------------------------------------------------
 
 
 def expand_abbreviations(text: str) -> str:
-    """
-    Expand common abbreviations in the text.
-
-    Args:
-        text: The input text containing abbreviations.
-
-    Returns:
-        The text with abbreviations expanded.
-    """
+    """Apply abbreviation substitutions."""
     for regex, replacement in _abbreviations:
         text = regex.sub(replacement, text)
     return text
 
 
 def collapse_whitespace(text: str) -> str:
-    """
-    Collapse multiple whitespaces into a single space.
-
-    Args:
-        text: The input text with potential multiple spaces.
-
-    Returns:
-        The text with whitespace collapsed.
-    """
     return _whitespace_re.sub(" ", text).strip()
 
 
 def no_cleaners(text: str) -> str:
-    """
-    Return the text unchanged.
-
-    Args:
-        text: The input text.
-
-    Returns:
-        The unchanged text.
-    """
     return text
 
 
 def english_cleaners(text: str) -> str:
-    """
-    Clean English text by unidecoding, normalizing numbers, and expanding abbreviations.
+    """English text cleaning with detailed debug logs."""
 
-    Args:
-        text: The input text to clean.
+    # Unicode → ASCII
 
-    Returns:
-        The cleaned text.
-    """
     text = unidecode(text)
+
+    # Numeric temperature patterns (handles °, deg, uppercase/lowercase)
+
+    temp_pattern = r"(\d+(?:\.\d+)?)\s*(?:°|deg)\s*([FfCc])"
+
+    def _temp_sub(match: re.Match) -> str:
+        num, unit = match.group(1), match.group(2).lower()
+        return f"{num} degrees {'fahrenheit' if unit == 'f' else 'celsius'}"
+
+    text = re.sub(temp_pattern, _temp_sub, text)
+
+    # Convert bare numbers → words
+
     text = normalize_numbers(text)
+
+    # Expand remaining abbreviations
+
     text = expand_abbreviations(text)
+
+    # Collapse whitespace
+
+    text = collapse_whitespace(text)
+
     return text
 
 
+# -----------------------------------------------------------------------------
+# Cleaner class
+# -----------------------------------------------------------------------------
+
+
 class Cleaner:
-    """Text cleaner that optionally phonemizes the text."""
+    """Configurable text cleaner/phonemizer."""
 
     def __init__(
         self,
@@ -113,61 +136,25 @@ class Cleaner:
         models_dir: Path,
         device: str = "cpu",
     ) -> None:
-        """
-        Initialize the Cleaner.
-
-        Args:
-            cleaner_name: Name of the cleaning function to use ('english_cleaners' or 'no_cleaners').
-            use_phonemes: Whether to convert text to phonemes.
-            lang: Language code for phonemization (e.g., 'en_us').
-            models_dir: Directory containing model files.
-            device: Device to load models onto ('cpu' or 'cuda').
-        """
-        if cleaner_name == "english_cleaners":
-            self.clean_func = english_cleaners
-        elif cleaner_name == "no_cleaners":
-            self.clean_func = no_cleaners
-        else:
-            raise ValueError(
-                f"Cleaner not supported: {cleaner_name}! "
-                f"Currently supported: ['english_cleaners', 'no_cleaners']"
-            )
+        self.lang = lang.replace("-", "_")
+        self.clean_func = (
+            english_cleaners if cleaner_name == "english_cleaners" else no_cleaners
+        )
         self.use_phonemes = use_phonemes
-        self.lang = lang
         self.device = device
 
-        if use_phonemes:
-            # Construct the path to the phonemizer checkpoint
-            checkpoint_path = models_dir / "en_us_cmudict_ipa_forward.pt"
-            if not checkpoint_path.is_file():
-                raise FileNotFoundError(
-                    f"Phonemizer checkpoint not found at {checkpoint_path}. "
-                    "Ensure that the model file exists."
-                )
-            # Initialize the phonemizer
-            self.phonemizer = Phonemizer.from_checkpoint(
-                checkpoint_path, device=self.device
-            )
+        if self.use_phonemes:
+            ckpt = models_dir / "en_us_cmudict_ipa_forward.pt"
+            if not ckpt.is_file():
+                raise FileNotFoundError(f"Phonemizer checkpoint not found at {ckpt}")
+            self.phonemizer = Phonemizer.from_checkpoint(ckpt, device=self.device)
 
     def __call__(self, text: str) -> str:
-        """
-        Clean and optionally phonemize the text.
-
-        Args:
-            text: Input text to clean.
-
-        Returns:
-            Cleaned (and optionally phonemized) text.
-        """
-        text = self.clean_func(text)
-
+        cleaned = self.clean_func(text)
         if self.use_phonemes:
-            # Phonemize the text using the appropriate method
-            phonemized_text = self.phonemizer(text, lang="en_us")
-            # Filter out unwanted phonemes
-            text = "".join([p for p in phonemized_text if p in phonemes_set])
-        text = collapse_whitespace(text)
-        return text
+            phon = self.phonemizer(cleaned, lang=self.lang)
+            cleaned = "".join(p for p in phon if p in phonemes_set)
+        return cleaned
 
     @classmethod
     def from_config(
@@ -176,21 +163,11 @@ class Cleaner:
         models_dir: Path,
         device: str = "cpu",
     ) -> "Cleaner":
-        """
-        Create a Cleaner instance from a configuration dictionary.
-
-        Args:
-            config: Configuration dictionary.
-            models_dir: Directory containing model files.
-            device: Device to load models onto ('cpu' or 'cuda').
-
-        Returns:
-            An instance of Cleaner.
-        """
+        cfg = config["preprocessing"]
         return cls(
-            cleaner_name=config["preprocessing"]["cleaner_name"],
-            use_phonemes=config["preprocessing"]["use_phonemes"],
-            lang=config["preprocessing"]["language"],
+            cleaner_name=cfg["cleaner_name"],
+            use_phonemes=cfg["use_phonemes"],
+            lang=cfg["language"],
             models_dir=models_dir,
             device=device,
         )
