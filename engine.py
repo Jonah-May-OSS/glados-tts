@@ -3,9 +3,6 @@ import os
 
 sys.path.insert(0, os.getcwd() + "/glados_tts")
 
-import torch
-from utils.tools import prepare_text
-from scipy.io.wavfile import write
 import time
 
 from glados import tts_runner
@@ -71,13 +68,14 @@ if __name__ == "__main__":
             tempfile = os.getcwd() + "/audio/GLaDOS-tts-temp-output-" + key + ".wav"
 
             # If the line isn't too long, store in cache
-
             if len(line) < 200 and CACHE:
                 shutil.move(tempfile, file)
+                return send_file(file)
             else:
-                return send_file(tempfile)
-                os.remove(tempfile)
-            return send_file(file)
+                try:
+                    return send_file(tempfile)
+                finally:
+                    os.remove(tempfile)
         else:
             return "TTS Engine Failed"
 

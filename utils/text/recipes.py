@@ -32,17 +32,16 @@ def read_metadata(
     """
     if format == "ljspeech":
         return read_ljspeech_format(path / metafile, multispeaker=False)
-    elif format == "ljspeech_multi":
+    if format == "ljspeech_multi":
         return read_ljspeech_format(path / metafile, multispeaker=True)
-    elif format == "vctk":
+    if format == "vctk":
         return read_vctk_format(path, n_workers=n_workers or 1)
-    elif format == "pandas":
+    if format == "pandas":
         return read_pandas_format(path / metafile)
-    else:
-        raise ValueError(
-            f"Unsupported format '{format}'. Supported formats are: "
-            f"'ljspeech', 'ljspeech_multi', 'vctk', 'pandas'."
-        )
+    raise ValueError(
+        f"Unsupported format '{format}'. Supported formats are: "
+        f"'ljspeech', 'ljspeech_multi', 'vctk', 'pandas'."
+    )
 
 
 def read_ljspeech_format(
