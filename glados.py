@@ -26,7 +26,8 @@ class TTSRunner:
         models_dir: Path = Path("models"),
     ):
         """
-        Initialize TTS: load embedding, cast Tacotron to FP16, and load or compile TRT Vocoder.
+        Initialize TTS: load embedding, cast Tacotron to FP16,
+        and load or compile TRT Vocoder.
         """
         self.log = log
         self.models_dir = models_dir
@@ -69,19 +70,20 @@ class TTSRunner:
         # Convert Tacotron weights to FP16 for speed
         _LOGGER.info("Converting Tacotron to FP16...")
         self.glados = base_tacotron.half().to(self.device).eval()
-        # Compact RNN weights
+        self.fp16 = True
+        # compact RNN weights
         try:
             self.glados.flatten_parameters()
         except Exception:
             for m in self.glados.modules():
                 if hasattr(m, "flatten_parameters"):
                     m.flatten_parameters()
-        self.fp16 = True
-        # Warm up Tacotron model to avoid first-chunk overhead
-        _LOGGER.info("Warming up Tacotron model... (initial dummy run)")
-        dummy_text = "Test"
-        dummy_input = prepare_text(dummy_text, self.models_dir, self.device)
-        _ = self.glados.generate_jit(dummy_input, self.emb.half(), 1.0)
+        # warm up first inference
+        _LOGGER.info("Warming up Tacotron dummy inference...")
+        start = time.time()
+        dummy_x = prepare_text("Warmup", self.models_dir, self.device)
+        _ = self.glados.generate_jit(dummy_x, self.emb.half(), 1.0)
+        _LOGGER.debug(f"Dummy Tacotron took {(time.time()-start)*1000:.1f} ms")
 
         # Load or compile TRT Vocoder with extended profile
         self.trt = False
@@ -112,6 +114,7 @@ class TTSRunner:
             trt_mod.save(str(trt_vocoder_path))
             self.vocoder = trt_mod.eval().to(self.device)
             self.trt = True
+        _LOGGER.info("Vocoder engine ready. TRT=%s", self.trt)
 
         # Warm up models
         self._warmup_models()
@@ -122,31 +125,39 @@ class TTSRunner:
             for bucket in BUCKET_SIZES:
                 text = "Hello " * bucket
                 x = prepare_text(text, self.models_dir, self.device)
+                # Tacotron timing
+                start_taco = time.time()
                 mel_out = self.glados.generate_jit(x, self.emb.half(), 1.0)[
                     "mel_post"
                 ].to(self.device)
-                mel = mel_out.half() if self.trt else mel_out.float()
+                # Always cast mel to FP32 for vocoder (TRT or TorchScript)
+                _LOGGER.debug(
+                    f"Warmup Tacotron bucket {bucket} took {(time.time()-start_taco)*1000:.1f} ms"
+                )
+                # Vocoder timing
+                mel = mel_out.float()  # ensure float32 for vocoder
+                start_voc = time.time()
                 _ = self.vocoder(mel)
-                _LOGGER.debug(f"Completed warmup bucket size {bucket}")
+                _LOGGER.debug(
+                    f"Warmup Vocoder bucket {bucket} took {(time.time()-start_voc)*1000:.1f} ms"
+                )
         _LOGGER.info("Model warm-ups complete.")
 
     def run_tts(self, text: str, alpha: float = 1.0) -> AudioSegment:
-        """Generate a full utterance audio segment."""
+        """Generate a full utterance audio segment with timing logs."""
         x = prepare_text(text, self.models_dir, self.device)
         emb = self.emb.half() if self.fp16 else self.emb
         with torch.no_grad():
-            if self.log:
-                start = time.time()
+            # Tacotron
+            start_taco = time.time()
             out = self.glados.generate_jit(x, emb, alpha)
-            if self.log:
-                _LOGGER.debug(f"Tacotron took {(time.time()-start)*1000:.1f} ms")
+            _LOGGER.debug(f"Tacotron total took {(time.time()-start_taco)*1000:.1f} ms")
+            # Vocoder
             mel = out["mel_post"].to(self.device)
-            mel = mel.half() if self.trt else mel.float()
-            if self.log:
-                start = time.time()
+            mel = mel.float()  # vocoder always expects float32
+            start_voc = time.time()
             audio_wave = self.vocoder(mel).squeeze()
-            if self.log:
-                _LOGGER.debug(f"Vocoder took {(time.time()-start)*1000:.1f} ms")
+            _LOGGER.debug(f"Vocoder total took {(time.time()-start_voc)*1000:.1f} ms")
         pcm = (audio_wave * 32768.0).cpu().numpy().astype("int16").tobytes()
         return AudioSegment(pcm, frame_rate=22050, sample_width=2, channels=1)
 
@@ -160,22 +171,18 @@ class TTSRunner:
             x = prepare_text(sentence, self.models_dir, self.device)
             emb = self.emb.half() if self.fp16 else self.emb
             with torch.no_grad():
-                if self.log:
-                    start_taco = time.time()
+                start_taco = time.time()
                 out = self.glados.generate_jit(x, emb, alpha)
-                if self.log:
-                    _LOGGER.debug(
-                        f"Tacotron chunk took {(time.time()-start_taco)*1000:.1f} ms"
-                    )
+                _LOGGER.debug(
+                    f"Tacotron chunk took {(time.time()-start_taco)*1000:.1f} ms"
+                )
                 mel_post = out["mel_post"].to(self.device)
-                mel_post = mel_post.half() if self.trt else mel_post.float()
-                if self.log:
-                    start_voc = time.time()
+                mel_post = mel_post.float()  # vocoder always expects float32
+                start_voc = time.time()
                 audio_wave = self.vocoder(mel_post).squeeze()
-                if self.log:
-                    _LOGGER.debug(
-                        f"Vocoder chunk took {(time.time()-start_voc)*1000:.1f} ms"
-                    )
+                _LOGGER.debug(
+                    f"Vocoder chunk took {(time.time()-start_voc)*1000:.1f} ms"
+                )
             raw = (audio_wave * 32768.0).cpu().numpy().astype("int16").tobytes()
             for i in range(0, len(raw), samples_per_chunk * width * channels):
                 yield (
