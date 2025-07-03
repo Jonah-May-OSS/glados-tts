@@ -1,46 +1,44 @@
+# utils/tools.py
 import torch
 from pathlib import Path
-from typing import Optional
+from functools import lru_cache
 from .text.cleaners import Cleaner
 from .text.tokenizer import Tokenizer
+
+
+# 1) cache Cleaner+Tokenizer singletons
+@lru_cache(maxsize=1)
+def _get_cleaner_and_tokenizer(
+    models_dir: str, device: str, cleaner_name: str, lang: str, use_phonemes: bool
+):
+    c = Cleaner(
+        cleaner_name=cleaner_name,
+        use_phonemes=use_phonemes,
+        lang=lang,
+        models_dir=Path(models_dir),
+        device=device,
+    )
+    t = Tokenizer()
+    return c, t
+
 
 def prepare_text(
     text: str,
     models_dir: Path,
     device: torch.device,
-    cleaner_name: str = 'english_cleaners',
+    cleaner_name: str = "english_cleaners",
     use_phonemes: bool = True,
-    lang: str = 'en-us'
+    lang: str = "en-us",
 ) -> torch.Tensor:
-    """
-    Prepares text for input into the TTS model by cleaning, tokenizing, and converting to a tensor.
-
-    Args:
-        text: The input text to process.
-        models_dir: Path to the directory containing model files.
-        device: The torch device to use (e.g., torch.device('cpu') or torch.device('cuda')).
-        cleaner_name: Name of the cleaning function to use.
-        use_phonemes: Whether to convert text to phonemes.
-        lang: Language code for phonemization.
-
-    Returns:
-        A torch.Tensor containing the tokenized text ready for the model.
-    """
     if not text:
         raise ValueError("Input text cannot be empty.")
+    if text[-1] not in ".?!":
+        text += "."
 
-    if not text[-1] in '.?!':
-        text += '.'
-
-    cleaner = Cleaner(
-        cleaner_name=cleaner_name,
-        use_phonemes=use_phonemes,
-        lang=lang,
-        models_dir=models_dir,
-        device=str(device)  # Assuming Cleaner expects device as a string
+    # pull from cache (phonemizer only initialized once)
+    cleaner, tokenizer = _get_cleaner_and_tokenizer(
+        str(models_dir), str(device), cleaner_name, lang, use_phonemes
     )
-    tokenizer = Tokenizer()
-    cleaned_text = cleaner(text)
-    tokens = tokenizer(cleaned_text)
-
+    cleaned = cleaner(text)
+    tokens = tokenizer(cleaned)
     return torch.as_tensor(tokens, dtype=torch.long, device=device).unsqueeze(0)
