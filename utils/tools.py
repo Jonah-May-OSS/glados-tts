@@ -5,7 +5,6 @@ from functools import lru_cache
 from .text.cleaners import Cleaner
 from .text.tokenizer import Tokenizer
 
-
 # 1) cache Cleaner+Tokenizer singletons
 @lru_cache(maxsize=1)
 def _get_cleaner_and_tokenizer(

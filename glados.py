@@ -15,7 +15,6 @@ _LOGGER = logging.getLogger(__name__)
 # Bucket sizes for VOCODER warm-ups
 BUCKET_SIZES = [16, 32, 64]
 
-
 class TTSRunner:
     """Text-to-Speech runner for GLaDOS TTS with streaming support and optional TRT Vocoder."""
 
