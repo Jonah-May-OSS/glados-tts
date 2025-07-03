@@ -1,4 +1,5 @@
 # utils/tools.py
+
 import torch
 from pathlib import Path
 from functools import lru_cache
@@ -6,6 +7,8 @@ from .text.cleaners import Cleaner
 from .text.tokenizer import Tokenizer
 
 # 1) cache Cleaner+Tokenizer singletons
+
+
 @lru_cache(maxsize=1)
 def _get_cleaner_and_tokenizer(
     models_dir: str, device: str, cleaner_name: str, lang: str, use_phonemes: bool
@@ -33,8 +36,8 @@ def prepare_text(
         raise ValueError("Input text cannot be empty.")
     if text[-1] not in ".?!":
         text += "."
-
     # pull from cache (phonemizer only initialized once)
+
     cleaner, tokenizer = _get_cleaner_and_tokenizer(
         str(models_dir), str(device), cleaner_name, lang, use_phonemes
     )

@@ -11,39 +11,40 @@ from typing import Match
 import inflect
 
 # Initialize the inflect engine
+
 _inflect = inflect.engine()
 
 # Regular expressions for different types of numerical patterns
-_comma_number_re = re.compile(r'([0-9][0-9,]+[0-9])')
-_decimal_number_re = re.compile(r'([0-9]+\.[0-9]+)')
-_pounds_re = re.compile(r'£([0-9,]*[0-9]+)')
-_dollars_re = re.compile(r'\$([0-9.,]*[0-9]+)')
-_ordinal_re = re.compile(r'\b([0-9]+)(st|nd|rd|th)\b')
-_number_re = re.compile(r'\b[0-9]+\b')
+
+_comma_number_re = re.compile(r"([0-9][0-9,]+[0-9])")
+_decimal_number_re = re.compile(r"([0-9]+\.[0-9]+)")
+_pounds_re = re.compile(r"£([0-9,]*[0-9]+)")
+_dollars_re = re.compile(r"\$([0-9.,]*[0-9]+)")
+_ordinal_re = re.compile(r"\b([0-9]+)(st|nd|rd|th)\b")
+_number_re = re.compile(r"\b[0-9]+\b")
 
 
 def _remove_commas(m: Match) -> str:
     """Remove commas from numbers."""
-    return m.group(1).replace(',', '')
+    return m.group(1).replace(",", "")
 
 
 def _expand_decimal_point(m: Match) -> str:
     """Expand decimal numbers by replacing the decimal point with 'point'."""
-    return m.group(1).replace('.', ' point ')
+    return m.group(1).replace(".", " point ")
 
 
 def _expand_dollars(m: Match) -> str:
     """Expand dollar amounts to spoken words."""
     match = m.group(1)
-    parts = match.replace(',', '').split('.')
+    parts = match.replace(",", "").split(".")
     if len(parts) > 2:
-        return match + ' dollars'  # Unexpected format
-
+        return match + " dollars"  # Unexpected format
     dollars = int(parts[0]) if parts[0] else 0
     cents = int(parts[1]) if len(parts) > 1 and parts[1] else 0
 
-    dollar_unit = 'dollar' if dollars == 1 else 'dollars'
-    cent_unit = 'cent' if cents == 1 else 'cents'
+    dollar_unit = "dollar" if dollars == 1 else "dollars"
+    cent_unit = "cent" if cents == 1 else "cents"
 
     if dollars and cents:
         return f"{dollars} {dollar_unit}, {cents} {cent_unit}"
@@ -52,14 +53,14 @@ def _expand_dollars(m: Match) -> str:
     elif cents:
         return f"{cents} {cent_unit}"
     else:
-        return 'zero dollars'
+        return "zero dollars"
 
 
 def _expand_pounds(m: Match) -> str:
     """Expand pound amounts to spoken words."""
-    amount = m.group(1).replace(',', '')
+    amount = m.group(1).replace(",", "")
     number = int(amount)
-    pound_unit = 'pound' if number == 1 else 'pounds'
+    pound_unit = "pound" if number == 1 else "pounds"
     return f"{number} {pound_unit}"
 
 
@@ -72,7 +73,7 @@ def _expand_number(m: Match) -> str:
     """Expand cardinal numbers to words."""
     num_str = m.group(0)
     num_int = int(num_str)
-    return _inflect.number_to_words(num_int, andword='')
+    return _inflect.number_to_words(num_int, andword="")
 
 
 def normalize_numbers(text: str) -> str:

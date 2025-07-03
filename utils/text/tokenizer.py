@@ -11,6 +11,7 @@ class Tokenizer:
     """
 
     # Class variables to avoid rebuilding mappings for each instance
+
     symbol_to_id: Dict[str, int] = {s: i for i, s in enumerate(phonemes)}
     id_to_symbol: Dict[int, str] = {i: s for i, s in enumerate(phonemes)}
 
@@ -39,4 +40,4 @@ class Tokenizer:
             Unknown IDs are ignored.
         """
         text = [self.id_to_symbol[s] for s in sequence if s in self.id_to_symbol]
-        return ''.join(text)
+        return "".join(text)

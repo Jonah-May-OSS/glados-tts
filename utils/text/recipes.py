@@ -7,14 +7,11 @@ import tqdm
 
 from .files import get_files
 
-DEFAULT_SPEAKER_NAME = 'default_speaker'
+DEFAULT_SPEAKER_NAME = "default_speaker"
 
 
 def read_metadata(
-    path: Path,
-    metafile: str,
-    format: str,
-    n_workers: Optional[int] = 1
+    path: Path, metafile: str, format: str, n_workers: Optional[int] = 1
 ) -> Tuple[Dict[str, str], Dict[str, str]]:
     """
     Reads metadata from different dataset formats and returns text and speaker dictionaries.
@@ -33,13 +30,13 @@ def read_metadata(
     Raises:
         ValueError: If an unsupported format is specified.
     """
-    if format == 'ljspeech':
+    if format == "ljspeech":
         return read_ljspeech_format(path / metafile, multispeaker=False)
-    elif format == 'ljspeech_multi':
+    elif format == "ljspeech_multi":
         return read_ljspeech_format(path / metafile, multispeaker=True)
-    elif format == 'vctk':
+    elif format == "vctk":
         return read_vctk_format(path, n_workers=n_workers or 1)
-    elif format == 'pandas':
+    elif format == "pandas":
         return read_pandas_format(path / metafile)
     else:
         raise ValueError(
@@ -49,8 +46,7 @@ def read_metadata(
 
 
 def read_ljspeech_format(
-    path: Path,
-    multispeaker: bool = False
+    path: Path, multispeaker: bool = False
 ) -> Tuple[Dict[str, str], Dict[str, str]]:
     """
     Reads metadata in LJSpeech format.
@@ -74,10 +70,10 @@ def read_ljspeech_format(
         )
     text_dict = {}
     speaker_dict = {}
-    with open(path, encoding='utf-8') as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
-            split = line.split('|')
+            split = line.split("|")
             if multispeaker and len(split) > 2:
                 speaker_name = split[-2]
             else:
@@ -89,9 +85,7 @@ def read_ljspeech_format(
 
 
 def read_vctk_format(
-    path: Path,
-    n_workers: int = 1,
-    extension: str = '.txt'
+    path: Path, n_workers: int = 1, extension: str = ".txt"
 ) -> Tuple[Dict[str, str], Dict[str, str]]:
     """
     Reads metadata in VCTK format.
@@ -125,7 +119,6 @@ def read_vctk_format(
             speaker_id = file.parent.stem
             text_dict[text_id] = text.strip()
             speaker_dict[text_id] = speaker_id
-
     return text_dict, speaker_dict
 
 
@@ -149,9 +142,9 @@ def read_pandas_format(path: Path) -> Tuple[Dict[str, str], Dict[str, str]]:
             f"Could not find metafile: {path}. "
             "Please make sure that you set the correct path and metafile name!"
         )
-    df = pd.read_csv(path, sep='\t', encoding='utf-8')
-    text_dict = pd.Series(df['text'].values, index=df['file_id']).to_dict()
-    speaker_dict = pd.Series(df['speaker_id'].values, index=df['file_id']).to_dict()
+    df = pd.read_csv(path, sep="\t", encoding="utf-8")
+    text_dict = pd.Series(df["text"].values, index=df["file_id"]).to_dict()
+    speaker_dict = pd.Series(df["speaker_id"].values, index=df["file_id"]).to_dict()
     return text_dict, speaker_dict
 
 
@@ -167,6 +160,6 @@ def read_line(file: Path) -> Tuple[Path, str]:
             - file: The Path object of the file.
             - line: The first line of the file.
     """
-    with open(file, encoding='utf-8') as f:
+    with open(file, encoding="utf-8") as f:
         line = f.readline()
     return file, line
