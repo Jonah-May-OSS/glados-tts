@@ -1,0 +1,17 @@
+name: Lint
+permissions:
+  contents: read
+  pull-requests: write
+
+on: [pull_request]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@09d2acae674a48949e3602304ab46fd20ae0c42f
+      - uses: psf/black@262ad62ca9f1d1b1537cc95a91643fb781d7c501
+        with:
+          options: "--check --verbose"
+          version: "~= 25.1"
+          
