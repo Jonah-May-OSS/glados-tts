@@ -1,7 +1,7 @@
 import logging
 import time
 from pathlib import Path
-from typing import Generator, Tuple
+from typing import AsyncGenerator, Tuple
 
 import torch
 from torch.amp import autocast
@@ -33,6 +33,7 @@ class TTSRunner:
         """
         self.log = log
         self.models_dir = models_dir
+        self.initialized = False
 
         # Device selection
 
@@ -43,6 +44,14 @@ class TTSRunner:
         else:
             self.device = torch.device("cpu")
         _LOGGER.info(f"Using device: {self.device}")
+
+        # Only initialize if not already initialized
+        if not self.initialized:
+            self.initialize_models(use_p1)
+
+    def initialize_models(self, use_p1: bool = False):
+        """Initialize models and perform warm-up."""
+        _LOGGER.info("Initializing GLaDOS TTS models...")         
 
         # Safe globals for embedding deserialization
 
@@ -138,6 +147,8 @@ class TTSRunner:
         # Warm up models
 
         self._warmup_models()
+        # Set initialized flag
+        self.initialized = True
 
     def quantize_model(self, model: torch.jit.ScriptModule) -> torch.jit.ScriptModule:
         """Quantize the Tacotron model to int8 for faster inference."""
@@ -205,13 +216,14 @@ class TTSRunner:
         pcm = (audio_wave * 32768.0).cpu().numpy().astype("int16").tobytes()
         return AudioSegment(pcm, frame_rate=22050, sample_width=2, channels=1)
 
-    def stream_tts(
+    async def stream_tts(
         self, text: str, alpha: float = 1.0, samples_per_chunk: int = 1024
-    ) -> Generator[Tuple[bytes, int, int, int], None, None]:
+    ) -> AsyncGenerator[Tuple[bytes, int, int, int], None]:
         """Pipelined TTS streaming generator with debug timing."""
         rate, width, channels = 22050, 2, 1
-        yield (b"__AUDIO_START__", rate, width, channels)
-        for sentence in filter(None, (s.strip() for s in text.split("."))):
+        sentences = filter(None, (s.strip() for s in text.split(".")))
+
+        for sentence in sentences:
             x = prepare_text(sentence, self.device, self.cleaner, self.tokenizer)
             emb = self.emb.half() if self.fp16 else self.emb
             with torch.no_grad():
@@ -230,16 +242,16 @@ class TTSRunner:
                 _LOGGER.debug(
                     f"Vocoder chunk took {(time.time()-start_voc)*1000:.1f} ms"
                 )
+
             raw = (audio_wave * 32768.0).cpu().numpy().astype("int16").tobytes()
-            for i in range(0, len(raw), samples_per_chunk * width * channels):
-                yield (
-                    raw[i : i + samples_per_chunk * width * channels],
-                    rate,
-                    width,
-                    channels,
-                )
-        yield (b"__AUDIO_STOP__", rate, width, channels)
-        yield (b"__SYNTH_STOPPED__", rate, width, channels)
+
+            # Yield a single chunk per sentence, process each sentence fully
+            yield (
+                raw[:samples_per_chunk * width * channels],
+                rate,
+                width,
+                channels,
+            )
 
     def play_audio(self, audio: AudioSegment):
         playback.play(audio)
