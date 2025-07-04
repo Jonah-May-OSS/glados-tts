@@ -6,6 +6,8 @@ from .text.tokenizer import Tokenizer
 from typing import List
 
 # 1) cache Cleaner+Tokenizer singletons
+
+
 @lru_cache(maxsize=1)
 def _get_cleaner_and_tokenizer(
     models_dir: str, device: str, cleaner_name: str, lang: str, use_phonemes: bool
@@ -19,6 +21,7 @@ def _get_cleaner_and_tokenizer(
     )
     t = Tokenizer()
     return c, t
+
 
 def prepare_text(
     text: List[str],

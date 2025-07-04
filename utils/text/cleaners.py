@@ -14,11 +14,13 @@ from dp.phonemizer import Phonemizer
 # Logging
 # -----------------------------------------------------------------------------
 
+
 _LOGGER = logging.getLogger(__name__)
 
 # -----------------------------------------------------------------------------
 # Abbreviation patterns (specific → generic)
 # -----------------------------------------------------------------------------
+
 
 _abbreviations: List[Tuple[re.Pattern, str]] = []
 
@@ -62,10 +64,11 @@ for pattern, repl in [
     (r"\bcol\.?(?=\b)", "colonel"),
 ]:
     _abbreviations.append((re.compile(pattern, re.IGNORECASE), repl))
-
 # -----------------------------------------------------------------------------
 # Helper functions
 # -----------------------------------------------------------------------------
+
+
 def expand_abbreviations(text: str) -> str:
     """Apply abbreviation substitutions using precompiled regex patterns."""
     for regex, replacement in _abbreviations:
