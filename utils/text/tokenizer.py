@@ -12,7 +12,7 @@ class Tokenizer:
     # Class variables to avoid rebuilding mappings for each instance
 
     symbol_to_id: Dict[str, int] = {s: i for i, s in enumerate(phonemes)}
-    id_to_symbol: Dict[int, str] = {i: s for i, s in enumerate(phonemes)}
+    id_to_symbol: Dict[int, str] = dict(enumerate(phonemes))
 
     def __call__(self, text: str) -> torch.Tensor:
         """

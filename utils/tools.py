@@ -24,7 +24,7 @@ def _get_cleaner_and_tokenizer(
 
 
 def prepare_text(
-    text: List[str],
+    text: str,
     device: torch.device,
     cleaner: Cleaner,  # Pass pre-loaded cleaner
     tokenizer: Tokenizer,  # Pass pre-loaded tokenizer
