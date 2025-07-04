@@ -1,7 +1,6 @@
 import logging
 import time
 from pathlib import Path
-from typing import AsyncGenerator, Tuple
 
 import torch
 from torch.amp import autocast
@@ -14,6 +13,7 @@ from .utils.tools import prepare_text, _get_cleaner_and_tokenizer
 _LOGGER = logging.getLogger(__name__)
 
 # Bucket sizes for VOCODER warm-ups
+
 
 BUCKET_SIZES = [16, 32, 64]
 
@@ -46,12 +46,13 @@ class TTSRunner:
         _LOGGER.info(f"Using device: {self.device}")
 
         # Only initialize if not already initialized
+
         if not self.initialized:
             self.initialize_models(use_p1)
 
     def initialize_models(self, use_p1: bool = False):
         """Initialize models and perform warm-up."""
-        _LOGGER.info("Initializing GLaDOS TTS models...")         
+        _LOGGER.info("Initializing GLaDOS TTS models...")
 
         # Safe globals for embedding deserialization
 
@@ -148,6 +149,7 @@ class TTSRunner:
 
         self._warmup_models()
         # Set initialized flag
+
         self.initialized = True
 
     def quantize_model(self, model: torch.jit.ScriptModule) -> torch.jit.ScriptModule:
@@ -215,43 +217,6 @@ class TTSRunner:
             _LOGGER.debug(f"Vocoder total took {(time.time()-start_voc)*1000:.1f} ms")
         pcm = (audio_wave * 32768.0).cpu().numpy().astype("int16").tobytes()
         return AudioSegment(pcm, frame_rate=22050, sample_width=2, channels=1)
-
-    async def stream_tts(
-        self, text: str, alpha: float = 1.0, samples_per_chunk: int = 1024
-    ) -> AsyncGenerator[Tuple[bytes, int, int, int], None]:
-        """Pipelined TTS streaming generator with debug timing."""
-        rate, width, channels = 22050, 2, 1
-        sentences = filter(None, (s.strip() for s in text.split(".")))
-
-        for sentence in sentences:
-            x = prepare_text(sentence, self.device, self.cleaner, self.tokenizer)
-            emb = self.emb.half() if self.fp16 else self.emb
-            with torch.no_grad():
-                start_taco = time.time()
-                with autocast(device_type=self.device.type):
-                    out = self.glados.generate_jit(x, emb, alpha)
-                    torch.cuda.empty_cache()
-                _LOGGER.debug(
-                    f"Tacotron chunk took {(time.time()-start_taco)*1000:.1f} ms"
-                )
-
-                mel_post = out["mel_post"].to(self.device)
-                mel_post = mel_post.float()  # vocoder always expects float32
-                start_voc = time.time()
-                audio_wave = self.vocoder(mel_post).squeeze()
-                _LOGGER.debug(
-                    f"Vocoder chunk took {(time.time()-start_voc)*1000:.1f} ms"
-                )
-
-            raw = (audio_wave * 32768.0).cpu().numpy().astype("int16").tobytes()
-
-            # Yield a single chunk per sentence, process each sentence fully
-            yield (
-                raw[:samples_per_chunk * width * channels],
-                rate,
-                width,
-                channels,
-            )
 
     def play_audio(self, audio: AudioSegment):
         playback.play(audio)
