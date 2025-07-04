@@ -4,11 +4,12 @@ from pathlib import Path
 from typing import Generator, Tuple
 
 import torch
+from torch.amp import autocast
 import torch_tensorrt
 from pydub import AudioSegment, playback
 from dp.preprocessing.text import Preprocessor, LanguageTokenizer, SequenceTokenizer
 
-from .utils.tools import prepare_text
+from .utils.tools import prepare_text, _get_cleaner_and_tokenizer
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -45,6 +46,11 @@ class TTSRunner:
             [Preprocessor, LanguageTokenizer, SequenceTokenizer]
         )
 
+        # Initialize Cleaner and Tokenizer only once
+        self.cleaner, self.tokenizer = _get_cleaner_and_tokenizer(
+            str(self.models_dir), str(self.device), "english_cleaners", "en_us", True
+        )
+
         # Load speaker embedding
         emb_filename = "glados_p1.pt" if use_p1 else "glados_p2.pt"
         emb_path = self.models_dir / "emb" / emb_filename
@@ -55,11 +61,7 @@ class TTSRunner:
         # Model file paths
         tacotron_path = self.models_dir / "glados-new.pt"
         vocoder_path = self.models_dir / "vocoder-gpu.pt"
-        trt_vocoder_path = (
-            (self.models_dir / "vocoder.trt")
-            if (self.models_dir / "vocoder.trt").exists()
-            else (self.models_dir / "vocoder-trt.ts")
-        )
+        trt_vocoder_path = self.models_dir / "vocoder-trt.ts"
         _LOGGER.debug(f"Looking for TRT vocoder at: {trt_vocoder_path}")
 
         # Load TorchScript models
@@ -82,8 +84,10 @@ class TTSRunner:
         # warm up first inference
         _LOGGER.info("Warming up Tacotron dummy inference...")
         start = time.time()
-        dummy_x = prepare_text("Warmup", self.models_dir, self.device)
-        _ = self.glados.generate_jit(dummy_x, self.emb.half(), 1.0)
+        dummy_x = prepare_text("Warmup", self.device, self.cleaner, self.tokenizer)
+        with autocast(device_type=self.device.type):  # Using mixed precision for Tacotron inference
+            _ = self.glados.generate_jit(dummy_x, self.emb.half(), 1.0)
+            torch.cuda.empty_cache()
         _LOGGER.debug(f"Dummy Tacotron took {(time.time()-start)*1000:.1f} ms")
 
         # Load or compile TRT Vocoder with extended profile
@@ -125,7 +129,7 @@ class TTSRunner:
         """Quantize the Tacotron model to int8 for faster inference."""
         _LOGGER.info("Quantizing Tacotron model to int8...")
         quantized_model = torch.quantization.quantize_dynamic(
-            model, {torch.nn.Linear}, dtype=torch.qint8
+            model, {torch.nn.Linear, torch.nn.Conv2d}, dtype=torch.qint8  # Quantizing other layers like Conv2d
         )
         quantized_model.eval()
         return quantized_model.to(self.device)
@@ -135,14 +139,16 @@ class TTSRunner:
         with torch.no_grad():
             for bucket in BUCKET_SIZES:
                 text = "Hello " * bucket
-                x = prepare_text(text, self.models_dir, self.device)
+                x = prepare_text(text, self.device, self.cleaner, self.tokenizer)
                 
                 # Tacotron timing
                 start_taco = time.time()
-                mel_out = self.glados.generate_jit(x, self.emb.half(), 1.0)[
-                    "mel_post"
-                ].to(self.device)
-                # Always cast mel to FP32 for vocoder (TRT or TorchScript)
+                with autocast(device_type=self.device.type):
+                    mel_out = self.glados.generate_jit(x, self.emb.half(), 1.0)[
+                        "mel_post"
+                    ].to(self.device)
+                    torch.cuda.empty_cache()
+                    # Always cast mel to FP32 for vocoder (TRT or TorchScript)
 
                 _LOGGER.debug(
                     f"Warmup Tacotron bucket {bucket} took {(time.time()-start_taco)*1000:.1f} ms"
@@ -159,16 +165,18 @@ class TTSRunner:
 
     def run_tts(self, text: str, alpha: float = 1.0) -> AudioSegment:
         """Generate a full utterance audio segment with timing logs."""
-        x = prepare_text(text, self.models_dir, self.device)
+        x = prepare_text(text, self.device, self.cleaner, self.tokenizer)
         emb = self.emb.half() if self.fp16 else self.emb
         with torch.no_grad():
             # Tacotron
             start_taco = time.time()
-            out = self.glados.generate_jit(x, emb, alpha)
+            with autocast(device_type=self.device.type):  # Using mixed precision for Tacotron inference
+                out = self.glados.generate_jit(x, emb, alpha)
+                torch.cuda.empty_cache()
             _LOGGER.debug(f"Tacotron total took {(time.time()-start_taco)*1000:.1f} ms")
 
             # Vocoder
-            mel = out["mel_post"].to(self.device)
+            mel = out["mel_post"]
             mel = mel.float()  # vocoder always expects float32
             start_voc = time.time()
             audio_wave = self.vocoder(mel).squeeze()
@@ -183,14 +191,17 @@ class TTSRunner:
         rate, width, channels = 22050, 2, 1
         yield (b"__AUDIO_START__", rate, width, channels)
         for sentence in filter(None, (s.strip() for s in text.split("."))):
-            x = prepare_text(sentence, self.models_dir, self.device)
+            x = prepare_text(sentence, self.device, self.cleaner, self.tokenizer)
             emb = self.emb.half() if self.fp16 else self.emb
             with torch.no_grad():
                 start_taco = time.time()
-                out = self.glados.generate_jit(x, emb, alpha)
+                with autocast(device_type=self.device.type):
+                    out = self.glados.generate_jit(x, emb, alpha)
+                    torch.cuda.empty_cache()
                 _LOGGER.debug(
                     f"Tacotron chunk took {(time.time()-start_taco)*1000:.1f} ms"
                 )
+                
                 mel_post = out["mel_post"].to(self.device)
                 mel_post = mel_post.float()  # vocoder always expects float32
                 start_voc = time.time()

@@ -1,14 +1,12 @@
-# utils/tools.py
-
 import torch
 from pathlib import Path
 from functools import lru_cache
 from .text.cleaners import Cleaner
 from .text.tokenizer import Tokenizer
+from typing import List
+from concurrent.futures import ThreadPoolExecutor
 
 # 1) cache Cleaner+Tokenizer singletons
-
-
 @lru_cache(maxsize=1)
 def _get_cleaner_and_tokenizer(
     models_dir: str, device: str, cleaner_name: str, lang: str, use_phonemes: bool
@@ -23,14 +21,11 @@ def _get_cleaner_and_tokenizer(
     t = Tokenizer()
     return c, t
 
-
 def prepare_text(
-    text: str,
-    models_dir: Path,
+    text: List[str],
     device: torch.device,
-    cleaner_name: str = "english_cleaners",
-    use_phonemes: bool = True,
-    lang: str = "en-us",
+    cleaner: Cleaner,  # Pass pre-loaded cleaner
+    tokenizer: Tokenizer,  # Pass pre-loaded tokenizer
 ) -> torch.Tensor:
     if not text:
         raise ValueError("Input text cannot be empty.")
@@ -38,9 +33,6 @@ def prepare_text(
         text += "."
     # pull from cache (phonemizer only initialized once)
 
-    cleaner, tokenizer = _get_cleaner_and_tokenizer(
-        str(models_dir), str(device), cleaner_name, lang, use_phonemes
-    )
     cleaned = cleaner(text)
     tokens = tokenizer(cleaned)
     return torch.as_tensor(tokens, dtype=torch.long, device=device).unsqueeze(0)
