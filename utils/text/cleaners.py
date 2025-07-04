@@ -14,17 +14,13 @@ from dp.phonemizer import Phonemizer
 # Logging
 # -----------------------------------------------------------------------------
 
+
 _LOGGER = logging.getLogger(__name__)
-
-# -----------------------------------------------------------------------------
-# Regex helpers
-# -----------------------------------------------------------------------------
-
-_whitespace_re = re.compile(r"\s+")
 
 # -----------------------------------------------------------------------------
 # Abbreviation patterns (specific → generic)
 # -----------------------------------------------------------------------------
+
 
 _abbreviations: List[Tuple[re.Pattern, str]] = []
 
@@ -74,14 +70,14 @@ for pattern, repl in [
 
 
 def expand_abbreviations(text: str) -> str:
-    """Apply abbreviation substitutions."""
+    """Apply abbreviation substitutions using precompiled regex patterns."""
     for regex, replacement in _abbreviations:
         text = regex.sub(replacement, text)
     return text
 
 
 def collapse_whitespace(text: str) -> str:
-    return _whitespace_re.sub(" ", text).strip()
+    return " ".join(text.split())
 
 
 def no_cleaners(text: str) -> str:
