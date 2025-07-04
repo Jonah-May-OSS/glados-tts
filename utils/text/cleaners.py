@@ -62,6 +62,9 @@ for pattern, repl in [
     (r"\besq\.?(?=\b)", "esquire"),
     (r"\bltd\.?(?=\b)", "limited"),
     (r"\bcol\.?(?=\b)", "colonel"),
+    (r"\bglados\b", "glah dos"),
+    (r"\bAI\b", "A I"),
+    (r"\bAI's\b", "A I's"),
 ]:
     _abbreviations.append((re.compile(pattern, re.IGNORECASE), repl))
 # -----------------------------------------------------------------------------
