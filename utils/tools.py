@@ -4,7 +4,6 @@ from functools import lru_cache
 from .text.cleaners import Cleaner
 from .text.tokenizer import Tokenizer
 from typing import List
-from concurrent.futures import ThreadPoolExecutor
 
 # 1) cache Cleaner+Tokenizer singletons
 @lru_cache(maxsize=1)
