@@ -41,6 +41,25 @@ for pattern, repl in [
     (r"(?<=\d)\s*g\b\.?", " grams"),
     (r"(?<=\d)\s*oz\b\.?", " ounces"),
     (r"(?<=\d)\s*lb\b\.?", " pounds"),
+    # Power & Electrical
+    (r"(?<=\d)\s*W\b", " watts"),
+    (r"(?<=\d)\s*kW\b", " kilowatts"),
+    (r"(?<=\d)\s*V\b", " volts"),
+    (r"(?<=\d)\s*A\b", " amps"),
+    (r"(?<=\d)\s*Hz\b", " hertz"),
+    # Pressure
+    (r"(?<=\d)\s*hPa\b", " hectopascals"),
+    (r"(?<=\d)\s*bar\b", " bar"),
+    (r"(?<=\d)\s*psi\b", " pounds per square inch"),
+    # Volume & Flow
+    (r"(?<=\d)\s*L\b", " liters"),
+    (r"(?<=\d)\s*mL\b", " milliliters"),
+    (r"(?<=\d)\s*m3\b", " cubic meters"),
+    # Environmental
+    (r"(?<=\d)\s*ppm\b", " parts per million"),
+    (r"(?<=\d)\s*lux\b", " lux"),
+    (r"(?<=\d)\s*dB\b", " decibels"),
+    # Time
     (r"(?<=\d)\s*hr\b\.?", " hours"),
     (r"(?<=\d)\s*min\b\.?", " minutes"),
     (r"(?<=\d)\s*sec\b\.?", " seconds"),
@@ -98,11 +117,23 @@ def english_cleaners(text: str) -> str:
 
     temp_pattern = r"(\d+(?:\.\d+)?)\s*(?:°|deg)\s*([FfCc])"
 
-    def _temp_sub(match: re.Match) -> str:
-        num, unit = match.group(1), match.group(2).lower()
-        return f"{num} degrees {'fahrenheit' if unit == 'f' else 'celsius'}"
+    # ENERGY UNITS: catch them while digits still exist
+    # 4.485 kWh → 4.485 kilowatt hours
 
-    text = re.sub(temp_pattern, _temp_sub, text)
+    text = re.sub(
+        r"([0-9]+(?:\.[0-9]+)?)\s*kWh\b",
+        r"\1 kilowatt hours",
+        text,
+        flags=re.IGNORECASE,
+    )
+    # 4.485 Wh → 4.485 watt hours
+
+    text = re.sub(
+        r"([0-9]+(?:\.[0-9]+)?)\s*Wh\b",
+        r"\1 watt hours",
+        text,
+        flags=re.IGNORECASE,
+    )
 
     # Convert bare numbers → words
 

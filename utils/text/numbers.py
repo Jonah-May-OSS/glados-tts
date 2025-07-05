@@ -12,9 +12,11 @@ import inflect
 
 # Initialize the inflect engine
 
+
 _inflect = inflect.engine()
 
 # Regular expressions for different types of numerical patterns
+
 
 _comma_number_re = re.compile(r"([0-9][0-9,]+[0-9])")
 _decimal_number_re = re.compile(r"([0-9]+\.[0-9]+)")
@@ -86,6 +88,11 @@ def normalize_numbers(text: str) -> str:
     Returns:
         The text with numbers expanded into words.
     """
+    # 0) Handle percentages first, so "64.4%" → "64.4 percent"
+
+    text = re.sub(r"([0-9]+(?:\.[0-9]+)?)%", r"\1 percent", text)
+    # 1) Remove commas from numbers, then expand all other patterns
+
     text = re.sub(_comma_number_re, _remove_commas, text)
     text = re.sub(_pounds_re, _expand_pounds, text)
     text = re.sub(_dollars_re, _expand_dollars, text)
