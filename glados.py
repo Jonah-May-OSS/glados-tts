@@ -3,7 +3,6 @@ import time
 from pathlib import Path
 
 import torch
-from torch.amp import autocast
 import torch_tensorrt
 from pydub import AudioSegment, playback
 from dp.preprocessing.text import Preprocessor, LanguageTokenizer, SequenceTokenizer
@@ -12,10 +11,9 @@ from .utils.tools import prepare_text, _get_cleaner_and_tokenizer
 
 _LOGGER = logging.getLogger(__name__)
 
-# Bucket sizes for VOCODER warm-ups
+# Bucket sizes for Tacotron warm-ups
 
-
-BUCKET_SIZES = [16, 32, 64]
+BUCKET_SIZES = [8, 16, 32]
 
 
 class TTSRunner:
@@ -33,6 +31,9 @@ class TTSRunner:
         """
         self.log = log
         self.models_dir = models_dir
+        self.fp16 = False
+        self.taco_trt = False
+        self.voco_trt = False
         self.initialized = False
 
         # Device selection
@@ -78,6 +79,8 @@ class TTSRunner:
 
         tacotron_path = self.models_dir / "glados-new.pt"
         vocoder_path = self.models_dir / "vocoder-gpu.pt"
+        trt_tacotron_path = self.models_dir / "tacotron-trt.ts"
+        _LOGGER.debug(f"Looking for Tacotron at: {tacotron_path}")
         trt_vocoder_path = self.models_dir / "vocoder-trt.ts"
         _LOGGER.debug(f"Looking for TRT vocoder at: {trt_vocoder_path}")
 
@@ -86,64 +89,76 @@ class TTSRunner:
         base_tacotron = torch.jit.load(str(tacotron_path), map_location=self.device)
         base_vocoder = torch.jit.load(str(vocoder_path), map_location=self.device)
 
-        # Quantize Tacotron model to int8 for faster inference
+        # Load or compile TRT Tacotron with extended profile
 
-        _LOGGER.info("Quantizing Tacotron to int8...")
-        self.glados = self.quantize_model(base_tacotron.to(self.device))
-        self.fp16 = False  # Using int8 instead of fp16
-
-        # Flatten parameters for Tacotron model
-
-        try:
-            self.glados.flatten_parameters()
-        except Exception:
-            for m in self.glados.modules():
-                if hasattr(m, "flatten_parameters"):
-                    m.flatten_parameters()
-        # warm up first inference
-
-        _LOGGER.info("Warming up Tacotron dummy inference...")
-        start = time.time()
-        dummy_x = prepare_text("Warmup", self.device, self.cleaner, self.tokenizer)
-        with autocast(
-            device_type=self.device.type
-        ):  # Using mixed precision for Tacotron inference
-            _ = self.glados.generate_jit(dummy_x, self.emb.half(), 1.0)
-            torch.cuda.empty_cache()
-        _LOGGER.debug(f"Dummy Tacotron took {(time.time()-start)*1000:.1f} ms")
+        self.taco_trt = False
+        if trt_tacotron_path.exists():
+            _LOGGER.info("Loading TRT tacotron engine...")
+            try:
+                self.glados = (
+                    torch.jit.load(str(trt_tacotron_path)).to(self.device).eval()
+                )
+                self.taco_trt = True
+            except Exception as e:
+                _LOGGER.error(f"Failed to load TRT tacotron: {e}")
+        if not self.taco_trt:
+            _LOGGER.info("Compiling TRT tacotron...")
+            try:
+                # 1) Quantize in PyTorch
+                quantized = torch.quantization.quantize_dynamic(
+                    base_tacotron.eval(),
+                    {torch.nn.Linear, torch.nn.Conv2d},
+                    dtype=torch.qint8,
+                )
+                # 2) Compile with TensorRT
+                trt_mod = torch.compile(
+                    quantized.to(self.device),
+                    backend="tensorrt",
+                )
+                trt_mod.save(str(trt_tacotron_path))
+                self.glados = trt_mod.eval().to(self.device)
+                self.taco_trt = True
+            except Exception as e:
+                _LOGGER.error(f"Failed to compile TRT tacotron: {e}")
+                self.tacotron_model = base_tacotron.to(self.device).eval()
+        _LOGGER.info("Tacotron engine ready. TRT=%s", self.taco_trt)
 
         # Load or compile TRT Vocoder with extended profile
 
-        self.trt = False
+        self.voco_trt = False
         if trt_vocoder_path.exists():
             _LOGGER.info("Loading TRT vocoder engine...")
             try:
                 self.vocoder = (
                     torch.jit.load(str(trt_vocoder_path)).to(self.device).eval()
                 )
-                self.trt = True
+                self.voco_trt = True
             except Exception as e:
                 _LOGGER.error(f"Failed to load TRT vocoder: {e}")
-        if not self.trt:
+        if not self.voco_trt:
             _LOGGER.info("Compiling TRT vocoder...")
-            trt_mod = torch_tensorrt.compile(
-                base_vocoder.eval().to(self.device),
-                inputs=[
-                    torch_tensorrt.Input(
-                        min_shape=[1, 80, 1],
-                        opt_shape=[1, 80, 500],
-                        max_shape=[1, 80, 2000],
-                        dtype=torch.float32,
-                    )
-                ],
-                enabled_precisions={torch.float16},
-                truncate_long_and_double=True,
-                calibrator=None,
-            )
-            trt_mod.save(str(trt_vocoder_path))
-            self.vocoder = trt_mod.eval().to(self.device)
-            self.trt = True
-        _LOGGER.info("Vocoder engine ready. TRT=%s", self.trt)
+            try:
+                trt_mod = torch_tensorrt.compile(
+                    base_vocoder.eval().to(self.device),
+                    inputs=[
+                        torch_tensorrt.Input(
+                            min_shape=[1, 80, 1],
+                            opt_shape=[1, 80, 500],
+                            max_shape=[1, 80, 2000],
+                            dtype=torch.float32,
+                        )
+                    ],
+                    enabled_precisions={torch.float16},
+                    truncate_long_and_double=True,
+                    calibrator=None,
+                )
+                trt_mod.save(str(trt_vocoder_path))
+                self.vocoder = trt_mod.eval().to(self.device)
+                self.voco_trt = True
+            except Exception as e:
+                _LOGGER.error(f"Failed to compile TRT vocoder: {e}")
+                self.tacotron_model = base_tacotron.to(self.device).eval()
+        _LOGGER.info("Vocoder engine ready. TRT=%s", self.voco_trt)
 
         # Warm up models
 
@@ -164,6 +179,16 @@ class TTSRunner:
         return quantized_model.to(self.device)
 
     def _warmup_models(self):
+        _LOGGER.info("Priming TRT engines with a minimal dummy run…")
+        with torch.no_grad():
+            # 1) Tacotron dummy: “Warmup” text → minimal mel
+            dummy_x = prepare_text("Warmup", self.device, self.cleaner, self.tokenizer)
+            start = time.time()
+            _ = self.glados.generate_jit(dummy_x, self.emb.half(), 1.0)
+            torch.cuda.empty_cache()
+            _LOGGER.debug(f"Dummy Tacotron took {(time.time() - start)*1000:.1f} ms")
+
+        # Now do your existing bucket warm-up:
         _LOGGER.info(f"Warming up with buckets: {BUCKET_SIZES}")
         with torch.no_grad():
             for bucket in BUCKET_SIZES:
@@ -171,26 +196,24 @@ class TTSRunner:
                 x = prepare_text(text, self.device, self.cleaner, self.tokenizer)
 
                 # Tacotron timing
-
                 start_taco = time.time()
-                with autocast(device_type=self.device.type):
-                    mel_out = self.glados.generate_jit(x, self.emb.half(), 1.0)[
-                        "mel_post"
-                    ].to(self.device)
-                    torch.cuda.empty_cache()
-                    # Always cast mel to FP32 for vocoder (TRT or TorchScript)
+                mel_out = self.glados.generate_jit(x, self.emb.half(), 1.0)[
+                    "mel_post"
+                ].to(self.device)
+                torch.cuda.empty_cache()
                 _LOGGER.debug(
-                    f"Warmup Tacotron bucket {bucket} took {(time.time()-start_taco)*1000:.1f} ms"
+                    f"Warmup Tacotron bucket {bucket} took {(time.time() - start_taco)*1000:.1f} ms"
                 )
 
                 # Vocoder timing
-
-                mel = mel_out.float()  # ensure float32 for vocoder
+                mel = mel_out.float()
                 start_voc = time.time()
                 _ = self.vocoder(mel)
+                torch.cuda.empty_cache()
                 _LOGGER.debug(
-                    f"Warmup Vocoder bucket {bucket} took {(time.time()-start_voc)*1000:.1f} ms"
+                    f"Warmup Vocoder bucket {bucket} took {(time.time() - start_voc)*1000:.1f} ms"
                 )
+
         _LOGGER.info("Model warm-ups complete.")
 
     def run_tts(self, text: str, alpha: float = 1.0) -> AudioSegment:
@@ -201,20 +224,26 @@ class TTSRunner:
             # Tacotron
 
             start_taco = time.time()
-            with autocast(
-                device_type=self.device.type
-            ):  # Using mixed precision for Tacotron inference
-                out = self.glados.generate_jit(x, emb, alpha)
-                torch.cuda.empty_cache()
-            _LOGGER.debug(f"Tacotron total took {(time.time()-start_taco)*1000:.1f} ms")
+            out = self.glados.generate_jit(x, emb, alpha)
+            n_frames = out["mel_post"].shape[-1]
+            _LOGGER.debug(
+                f"Tacotron generated mel with {n_frames} frames "
+                + f"in {(time.time()-start_taco)*1000:.1f} ms"
+            )
+            torch.cuda.synchronize()
 
             # Vocoder
-
             mel = out["mel_post"]
-            mel = mel.float()  # vocoder always expects float32
+            n_frames = mel.shape[-1]
+            torch.cuda.empty_cache()
             start_voc = time.time()
-            audio_wave = self.vocoder(mel).squeeze()
-            _LOGGER.debug(f"Vocoder total took {(time.time()-start_voc)*1000:.1f} ms")
+            audio_wave = self.vocoder(mel.float()).squeeze()
+            voc_ms = (time.time() - start_voc) * 1000
+            _LOGGER.debug(
+                f"Vocoder generated audio from mel with {n_frames} frames "
+                f"in {voc_ms:.1f} ms"
+            )
+
         pcm = (audio_wave * 32768.0).cpu().numpy().astype("int16").tobytes()
         return AudioSegment(pcm, frame_rate=22050, sample_width=2, channels=1)
 
