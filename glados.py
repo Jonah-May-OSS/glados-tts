@@ -157,7 +157,7 @@ class TTSRunner:
                 self.voco_trt = True
             except Exception as e:
                 _LOGGER.error(f"Failed to compile TRT vocoder: {e}")
-                self.tacotron_model = base_tacotron.to(self.device).eval()
+                self.vocoder = base_vocoder.to(self.device).eval()
         _LOGGER.info("Vocoder engine ready. TRT=%s", self.voco_trt)
 
         # Warm up models
