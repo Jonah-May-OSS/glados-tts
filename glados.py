@@ -60,13 +60,16 @@ class TTSRunner:
         min_workspace = 1 * 1024 * 1024 * 1024  # 1GB minimum
         max_workspace = 4 * 1024 * 1024 * 1024  # 4GB maximum
 
-        if not torch.cuda.is_available():
-            _LOGGER.info("CUDA not available, using default workspace size: 2GB")
+        if self.device.type != "cuda":
+            _LOGGER.info(
+                f"Non-CUDA device ({self.device.type}), using default workspace size: 2GB"
+            )
             return default_workspace
 
         try:
-            # Get total VRAM
-            total_memory = torch.cuda.get_device_properties(0).total_memory
+            # Get total VRAM from the specific device being used
+            device_index = self.device.index if self.device.index is not None else 0
+            total_memory = torch.cuda.get_device_properties(device_index).total_memory
             # Use 40% of total VRAM as a conservative workspace size
             calculated_workspace = int(total_memory * 0.4)
 
@@ -76,7 +79,7 @@ class TTSRunner:
             )
 
             _LOGGER.info(
-                f"Total VRAM: {total_memory / (1024**3):.2f}GB, "
+                f"CUDA device {device_index}: Total VRAM: {total_memory / (1024**3):.2f}GB, "
                 f"Setting workspace size to {workspace_size / (1024**3):.2f}GB"
             )
             return workspace_size
