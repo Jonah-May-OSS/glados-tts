@@ -51,6 +51,42 @@ class TTSRunner:
         if not self.initialized:
             self.initialize_models(use_p1)
 
+    def _get_workspace_size(self) -> int:
+        """
+        Calculate TensorRT workspace size dynamically based on available VRAM.
+        Returns workspace size in bytes.
+        """
+        default_workspace = 2 * 1024 * 1024 * 1024  # 2GB default
+        min_workspace = 1 * 1024 * 1024 * 1024  # 1GB minimum
+        max_workspace = 4 * 1024 * 1024 * 1024  # 4GB maximum
+
+        if self.device.type != "cuda":
+            _LOGGER.info(
+                f"Non-CUDA device ({self.device.type}), using default workspace size: 2GB"
+            )
+            return default_workspace
+
+        try:
+            # Get total VRAM from the specific device being used
+            device_index = self.device.index if self.device.index is not None else 0
+            total_memory = torch.cuda.get_device_properties(device_index).total_memory
+            # Use 40% of total VRAM as a conservative workspace size
+            calculated_workspace = int(total_memory * 0.4)
+
+            # Clamp to min/max bounds
+            workspace_size = max(
+                min_workspace, min(calculated_workspace, max_workspace)
+            )
+
+            _LOGGER.info(
+                f"CUDA device {device_index}: Total VRAM: {total_memory / (1024**3):.2f}GB, "
+                f"Setting workspace size to {workspace_size / (1024**3):.2f}GB"
+            )
+            return workspace_size
+        except Exception as e:
+            _LOGGER.warning(f"Failed to detect VRAM, using default workspace size: {e}")
+            return default_workspace
+
     def initialize_models(self, use_p1: bool = False):
         """Initialize models and perform warm-up."""
         _LOGGER.info("Initializing GLaDOS TTS models...")
@@ -138,6 +174,7 @@ class TTSRunner:
         if not self.voco_trt:
             _LOGGER.info("Compiling TRT vocoder...")
             try:
+                workspace_size = self._get_workspace_size()
                 trt_mod = torch_tensorrt.compile(
                     base_vocoder.eval().to(self.device),
                     inputs=[
@@ -151,6 +188,7 @@ class TTSRunner:
                     enabled_precisions={torch.float16},
                     truncate_long_and_double=True,
                     calibrator=None,
+                    workspace_size=workspace_size,
                 )
                 trt_mod.save(str(trt_vocoder_path))
                 self.vocoder = trt_mod.eval().to(self.device)
