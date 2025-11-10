@@ -151,6 +151,10 @@ class TTSRunner:
                     enabled_precisions={torch.float16},
                     truncate_long_and_double=True,
                     calibrator=None,
+                    workspace_size=2
+                    * 1024
+                    * 1024
+                    * 1024,  # 2GB workspace limit to reduce VRAM usage
                 )
                 trt_mod.save(str(trt_vocoder_path))
                 self.vocoder = trt_mod.eval().to(self.device)
