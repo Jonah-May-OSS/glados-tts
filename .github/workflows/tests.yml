@@ -1,5 +1,8 @@
 name: Tests
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [ "main" ]
@@ -11,6 +14,8 @@ jobs:
   unit-tests:
     name: Unit Tests (CPU)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     
     steps:
       - name: Checkout repository
@@ -43,6 +48,8 @@ jobs:
   gpu-tests:
     name: GPU Integration Tests
     runs-on: self-hosted
+    permissions:
+      contents: read
     
     steps:
       - name: Checkout repository
@@ -90,6 +97,8 @@ jobs:
     runs-on: self-hosted
     needs: [unit-tests, gpu-tests]
     if: always()
+    permissions:
+      contents: read
     
     steps:
       - name: Checkout repository
