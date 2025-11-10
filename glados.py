@@ -3,11 +3,19 @@ import time
 from pathlib import Path
 
 import torch
-import torch_tensorrt
+
+try:
+    import torch_tensorrt
+    HAS_TORCH_TENSORRT = True
+except ImportError:
+    HAS_TORCH_TENSORRT = False
+    _LOGGER = logging.getLogger(__name__)
+    _LOGGER.warning("torch_tensorrt not available. TensorRT compilation will be disabled.")
+
 from pydub import AudioSegment, playback
 from dp.preprocessing.text import Preprocessor, LanguageTokenizer, SequenceTokenizer
 
-from .utils.tools import prepare_text, _get_cleaner_and_tokenizer
+from utils.tools import prepare_text, _get_cleaner_and_tokenizer
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -173,29 +181,33 @@ class TTSRunner:
                 _LOGGER.error(f"Failed to load TRT vocoder: {e}")
         if not self.voco_trt:
             _LOGGER.info("Compiling TRT vocoder...")
-            try:
-                workspace_size = self._get_workspace_size()
-                trt_mod = torch_tensorrt.compile(
-                    base_vocoder.eval().to(self.device),
-                    inputs=[
-                        torch_tensorrt.Input(
-                            min_shape=[1, 80, 1],
-                            opt_shape=[1, 80, 500],
-                            max_shape=[1, 80, 2000],
-                            dtype=torch.float32,
-                        )
-                    ],
-                    enabled_precisions={torch.float16},
-                    truncate_long_and_double=True,
-                    calibrator=None,
-                    workspace_size=workspace_size,
-                )
-                trt_mod.save(str(trt_vocoder_path))
-                self.vocoder = trt_mod.eval().to(self.device)
-                self.voco_trt = True
-            except Exception as e:
-                _LOGGER.error(f"Failed to compile TRT vocoder: {e}")
+            if not HAS_TORCH_TENSORRT:
+                _LOGGER.warning("torch_tensorrt not available, using base vocoder")
                 self.vocoder = base_vocoder.to(self.device).eval()
+            else:
+                try:
+                    workspace_size = self._get_workspace_size()
+                    trt_mod = torch_tensorrt.compile(
+                        base_vocoder.eval().to(self.device),
+                        inputs=[
+                            torch_tensorrt.Input(
+                                min_shape=[1, 80, 1],
+                                opt_shape=[1, 80, 500],
+                                max_shape=[1, 80, 2000],
+                                dtype=torch.float32,
+                            )
+                        ],
+                        enabled_precisions={torch.float16},
+                        truncate_long_double=True,
+                        calibrator=None,
+                        workspace_size=workspace_size,
+                    )
+                    trt_mod.save(str(trt_vocoder_path))
+                    self.vocoder = trt_mod.eval().to(self.device)
+                    self.voco_trt = True
+                except Exception as e:
+                    _LOGGER.error(f"Failed to compile TRT vocoder: {e}")
+                    self.vocoder = base_vocoder.to(self.device).eval()
         _LOGGER.info("Vocoder engine ready. TRT=%s", self.voco_trt)
 
         # Warm up models

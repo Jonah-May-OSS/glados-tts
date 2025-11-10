@@ -2,6 +2,13 @@
 import pytest
 import torch
 from pathlib import Path
+from dp.preprocessing.text import Preprocessor, LanguageTokenizer, SequenceTokenizer
+
+
+# Set up safe globals for PyTorch 2.6+ compatibility
+torch.serialization.add_safe_globals(
+    [Preprocessor, LanguageTokenizer, SequenceTokenizer]
+)
 
 
 @pytest.fixture
