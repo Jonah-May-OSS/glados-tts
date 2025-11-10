@@ -1,4 +1,5 @@
 """Tests for the Flask engine API."""
+
 import pytest
 import sys
 import os
@@ -7,8 +8,7 @@ from pathlib import Path
 
 # Mark all tests as requiring models
 pytestmark = pytest.mark.skipif(
-    not Path("models/glados-new.pt").exists(),
-    reason="Models not available"
+    not Path("models/glados-new.pt").exists(), reason="Models not available"
 )
 
 

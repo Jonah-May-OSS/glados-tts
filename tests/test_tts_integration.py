@@ -1,4 +1,5 @@
 """Integration tests for GLaDOS TTS engine (requires GPU and models)."""
+
 import pytest
 import torch
 from pathlib import Path
@@ -19,17 +20,17 @@ class TestTTSRunner:
         # Skip if models are not available
         if not models_dir.exists():
             pytest.skip("Models directory not found")
-        
+
         required_files = [
             models_dir / "glados-new.pt",
             models_dir / "vocoder-gpu.pt",
             models_dir / "emb" / "glados_p2.pt",
         ]
-        
+
         for file_path in required_files:
             if not file_path.exists():
                 pytest.skip(f"Required model file not found: {file_path}")
-        
+
         return TTSRunner(use_p1=False, log=True, models_dir=models_dir)
 
     def test_tts_runner_initialization(self, tts_runner):
@@ -56,7 +57,7 @@ class TestTTSRunner:
         """Test basic TTS generation."""
         text = "Hello world."
         audio = tts_runner.run_tts(text)
-        
+
         assert isinstance(audio, AudioSegment)
         assert audio.frame_rate == 22050
         assert audio.sample_width == 2
@@ -75,7 +76,7 @@ class TestTTSRunner:
     def test_run_tts_with_alpha(self, tts_runner):
         """Test TTS generation with different alpha values."""
         text = "Testing different alpha values."
-        
+
         for alpha in [0.8, 1.0, 1.2]:
             audio = tts_runner.run_tts(text, alpha=alpha)
             assert isinstance(audio, AudioSegment)
@@ -89,7 +90,7 @@ class TestTTSRunner:
             "over the lazy dog. Testing, testing, one two three."
         )
         audio = tts_runner.run_tts(text)
-        
+
         assert isinstance(audio, AudioSegment)
         assert len(audio) > 1000  # Should be at least 1 second
 
@@ -101,7 +102,7 @@ class TestTTSRunner:
             "Testing... one, two, three.",
             "Numbers: 1, 2, 3, 4, 5.",
         ]
-        
+
         for text in texts:
             audio = tts_runner.run_tts(text)
             assert isinstance(audio, AudioSegment)
@@ -113,14 +114,14 @@ class TestTTSRunner:
         p1_emb = models_dir / "emb" / "glados_p1.pt"
         if not p1_emb.exists():
             pytest.skip("Portal 1 embedding not found")
-        
+
         runner_p1 = TTSRunner(use_p1=True, log=True, models_dir=models_dir)
         runner_p2 = TTSRunner(use_p1=False, log=True, models_dir=models_dir)
-        
+
         text = "Testing voice variants."
         audio_p1 = runner_p1.run_tts(text)
         audio_p2 = runner_p2.run_tts(text)
-        
+
         # Both should produce valid audio
         assert isinstance(audio_p1, AudioSegment)
         assert isinstance(audio_p2, AudioSegment)
@@ -130,25 +131,24 @@ class TestTTSRunner:
     def test_tts_consistency(self, tts_runner):
         """Test that same text produces consistent output length."""
         text = "Consistency test."
-        
+
         audio1 = tts_runner.run_tts(text)
         audio2 = tts_runner.run_tts(text)
-        
+
         # Length should be similar (within 10%)
         len_diff = abs(len(audio1) - len(audio2))
         max_allowed_diff = max(len(audio1), len(audio2)) * 0.1
         assert len_diff <= max_allowed_diff
 
     @pytest.mark.skipif(
-        not torch.cuda.is_available(),
-        reason="TensorRT compilation requires CUDA"
+        not torch.cuda.is_available(), reason="TensorRT compilation requires CUDA"
     )
     def test_tensorrt_compilation(self, tts_runner):
         """Test that TensorRT compilation works (if applicable)."""
         # This test checks if TRT engines are created/loaded
         # The taco_trt and voco_trt flags indicate if TRT is being used
-        assert hasattr(tts_runner, 'taco_trt')
-        assert hasattr(tts_runner, 'voco_trt')
+        assert hasattr(tts_runner, "taco_trt")
+        assert hasattr(tts_runner, "voco_trt")
         # Just ensure the flags are boolean
         assert isinstance(tts_runner.taco_trt, bool)
         assert isinstance(tts_runner.voco_trt, bool)
@@ -156,7 +156,7 @@ class TestTTSRunner:
     def test_workspace_size_calculation(self, tts_runner):
         """Test workspace size calculation for TensorRT."""
         workspace_size = tts_runner._get_workspace_size()
-        
+
         assert isinstance(workspace_size, int)
         assert workspace_size > 0
         # Should be between 1GB and 4GB

@@ -6,11 +6,14 @@ import torch
 
 try:
     import torch_tensorrt
+
     HAS_TORCH_TENSORRT = True
 except ImportError:
     HAS_TORCH_TENSORRT = False
     _LOGGER = logging.getLogger(__name__)
-    _LOGGER.warning("torch_tensorrt not available. TensorRT compilation will be disabled.")
+    _LOGGER.warning(
+        "torch_tensorrt not available. TensorRT compilation will be disabled."
+    )
 
 from pydub import AudioSegment, playback
 from dp.preprocessing.text import Preprocessor, LanguageTokenizer, SequenceTokenizer

@@ -1,4 +1,5 @@
 """Unit tests for utility functions."""
+
 import pytest
 import torch
 from pathlib import Path
@@ -15,7 +16,7 @@ class TestTextPreparation:
         )
         text = "Hello world"
         result = prepare_text(text, device, cleaner, tokenizer)
-        
+
         assert isinstance(result, torch.Tensor)
         assert result.dim() == 2  # Should be batched
         assert result.shape[0] == 1  # Batch size of 1
@@ -28,7 +29,7 @@ class TestTextPreparation:
         )
         text = "Hello world"
         result = prepare_text(text, device, cleaner, tokenizer)
-        
+
         # Text should be processed successfully
         assert result is not None
         assert result.numel() > 0
@@ -38,7 +39,7 @@ class TestTextPreparation:
         cleaner, tokenizer = _get_cleaner_and_tokenizer(
             "models", str(device), "english_cleaners", "en_us", True
         )
-        for punct in ['.', '?', '!']:
+        for punct in [".", "?", "!"]:
             text = f"Hello world{punct}"
             result = prepare_text(text, device, cleaner, tokenizer)
             assert isinstance(result, torch.Tensor)
@@ -61,7 +62,7 @@ class TestTextPreparation:
         result2 = _get_cleaner_and_tokenizer(
             "models", str(device), "english_cleaners", "en_us", True
         )
-        
+
         # Should return same instances (cached)
         assert result1[0] is result2[0]
         assert result1[1] is result2[1]
@@ -71,7 +72,7 @@ class TestTextPreparation:
         cleaner, tokenizer = _get_cleaner_and_tokenizer(
             "models", str(device), "english_cleaners", "en_us", True
         )
-        
+
         for text in sample_texts:
             result = prepare_text(text, device, cleaner, tokenizer)
             assert isinstance(result, torch.Tensor)

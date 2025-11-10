@@ -45,6 +45,16 @@ This project includes automated tests to ensure code quality and functionality.
 
 ### Running Tests Locally
 
+**Quick Start:**
+Use the provided test runner script:
+```bash
+./run_tests.sh          # Run all tests
+./run_tests.sh unit     # Run only unit tests (no GPU)
+./run_tests.sh gpu      # Run only GPU tests
+```
+
+**Manual Test Execution:**
+
 1. Install development dependencies:
    ```bash
    pip install -r requirements-dev.txt
