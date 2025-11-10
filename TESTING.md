@@ -49,19 +49,14 @@ pytest tests/ -v  # All tests
 
 ## GitHub Actions Workflows
 
-The `.github/workflows/tests.yml` workflow includes three jobs:
+The `.github/workflows/tests.yml` workflow includes two jobs:
 
-### 1. Unit Tests (CPU)
-- Runs on: `ubuntu-latest`
-- Tests: Unit tests only (marked with `-m "not gpu"`)
-- Purpose: Quick validation of code changes without GPU
-
-### 2. GPU Integration Tests
+### 1. GPU Integration Tests
 - Runs on: `self-hosted` (requires setup)
 - Tests: Full TTS pipeline tests
 - Purpose: Validate GPU functionality and model inference
 
-### 3. All Tests Summary
+### 2. All Tests Summary
 - Runs on: `self-hosted` (requires setup)
 - Tests: Complete test suite with coverage
 - Purpose: Generate comprehensive coverage reports

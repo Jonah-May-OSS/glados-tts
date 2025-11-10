@@ -84,7 +84,6 @@ Use the provided test runner script:
 
 The project uses GitHub Actions for automated testing:
 
-- **Unit Tests**: Run on standard Ubuntu runners for non-GPU tests
 - **GPU Integration Tests**: Run on self-hosted runners with CUDA support
 - **Coverage Reports**: Generated and uploaded to Codecov
 
