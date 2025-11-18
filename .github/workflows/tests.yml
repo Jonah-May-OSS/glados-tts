@@ -1,0 +1,104 @@
+name: Tests
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  gpu-tests:
+    name: GPU Integration Tests
+    runs-on: self-hosted
+    permissions:
+      contents: read
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+      
+      - name: Verify GPU availability
+        run: |
+          python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}'); print(f'CUDA device count: {torch.cuda.device_count()}'); print(f'CUDA device name: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"N/A\"}')"
+      
+      - name: Verify models
+        run: |
+          # Check if required model files exist
+          test -f models/glados-new.pt || echo "Warning: glados-new.pt not found"
+          test -f models/vocoder-gpu.pt || echo "Warning: vocoder-gpu.pt not found"
+          test -f models/emb/glados_p2.pt || echo "Warning: glados_p2.pt not found"
+          test -f models/en_us_cmudict_ipa_forward.pt || echo "Warning: phonemizer model not found"
+      
+      - name: Run GPU tests
+        run: |
+          pytest tests/test_tts_integration.py -v -m gpu
+      
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          files: ./coverage.xml
+          flags: gpu-tests
+          name: gpu-coverage
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  all-tests:
+    name: All Tests Summary
+    runs-on: self-hosted
+    needs: [gpu-tests]
+    if: always()
+    permissions:
+      contents: read
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+      
+      - name: Run all tests
+        run: |
+          pytest tests/ -v --cov=. --cov-report=xml --cov-report=html
+      
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          files: ./coverage.xml
+          flags: all-tests
+          name: full-coverage
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+      
+      - name: Upload coverage HTML report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: htmlcov/
+          retention-days: 7
