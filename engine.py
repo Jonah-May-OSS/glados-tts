@@ -1,11 +1,10 @@
-import sys
 import os
-
-sys.path.insert(0, os.getcwd() + "/glados_tts")
-
+import sys
 import time
 
 from glados import tts_runner
+
+sys.path.insert(0, os.getcwd() + "/glados_tts")
 
 print("\033[1;94mINFO:\033[;97m Initializing TTS Engine...")
 
