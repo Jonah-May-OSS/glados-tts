@@ -15,10 +15,10 @@ except ImportError:
         "torch_tensorrt not available. TensorRT compilation will be disabled."
     )
 
+from dp.preprocessing.text import LanguageTokenizer, Preprocessor, SequenceTokenizer
 from pydub import AudioSegment, playback
-from dp.preprocessing.text import Preprocessor, LanguageTokenizer, SequenceTokenizer
+from utils.tools import _get_cleaner_and_tokenizer, prepare_text
 
-from utils.tools import prepare_text, _get_cleaner_and_tokenizer
 
 _LOGGER = logging.getLogger(__name__)
 
