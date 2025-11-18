@@ -30,9 +30,10 @@ if __name__ == "__main__":
     PORT = 8124
     CACHE = True
 
-    from flask import Flask, request, send_file
-    import urllib.parse
     import shutil
+    import urllib.parse
+
+    from flask import Flask, request, send_file
 
     print("\033[1;94mINFO:\033[;97m Initializing TTS Server...")
 
