@@ -3,7 +3,6 @@ from pathlib import Path
 from functools import lru_cache
 from .text.cleaners import Cleaner
 from .text.tokenizer import Tokenizer
-from typing import List
 
 # 1) cache Cleaner+Tokenizer singletons
 
