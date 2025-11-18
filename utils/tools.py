@@ -1,6 +1,8 @@
-import torch
-from pathlib import Path
 from functools import lru_cache
+from pathlib import Path
+
+import torch
+
 from .text.cleaners import Cleaner
 from .text.tokenizer import Tokenizer
 
