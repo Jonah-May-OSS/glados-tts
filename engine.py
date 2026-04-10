@@ -7,7 +7,7 @@ import time
 import urllib.parse
 from pathlib import Path
 
-from flask import Flask, request, send_file
+from flask import Flask, abort, request, send_file
 
 from glados import TTSRunner
 
@@ -49,6 +49,12 @@ def create_app() -> Flask:
         filename = filename.replace("°c", "degrees celcius")
         filename = filename.replace(",", "") + ".wav"
         cached_file = AUDIO_DIR / filename
+
+        audio_root = AUDIO_DIR.resolve()
+        try:
+            cached_file.resolve().relative_to(audio_root)
+        except ValueError:
+            abort(400, description="Invalid filename")
 
         if cached_file.is_file():
             os.utime(cached_file, None)
