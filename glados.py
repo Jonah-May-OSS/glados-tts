@@ -71,7 +71,8 @@ class TTSRunner:
 
         if self.device.type != "cuda":
             _LOGGER.info(
-                f"Non-CUDA device ({self.device.type}), using default workspace size: 2GB"
+                "Non-CUDA device (%s), using default workspace size: 2GB",
+                self.device.type,
             )
             return default_workspace
 
@@ -88,12 +89,16 @@ class TTSRunner:
             )
 
             _LOGGER.info(
-                f"CUDA device {device_index}: Total VRAM: {total_memory / (1024**3):.2f}GB, "
-                f"Setting workspace size to {workspace_size / (1024**3):.2f}GB"
+                "CUDA device %s: Total VRAM: %.2fGB, Setting workspace size to %.2fGB",
+                device_index,
+                total_memory / (1024**3),
+                workspace_size / (1024**3),
             )
             return workspace_size
         except Exception as e:
-            _LOGGER.warning(f"Failed to detect VRAM, using default workspace size: {e}")
+            _LOGGER.warning(
+                "Failed to detect VRAM, using default workspace size: %s", e
+            )
             return default_workspace
 
     @staticmethod
