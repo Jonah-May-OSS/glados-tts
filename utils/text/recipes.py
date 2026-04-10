@@ -1,3 +1,5 @@
+"""Dataset metadata loading helpers for text/voice training corpora."""
+
 from multiprocessing import Pool
 from pathlib import Path
 from typing import Dict, Tuple, Optional
@@ -5,13 +7,16 @@ from typing import Dict, Tuple, Optional
 import pandas as pd
 import tqdm
 
-from .files import get_files
-
 DEFAULT_SPEAKER_NAME = "default_speaker"
 
 
+def get_files(path: Path, extension: str = ".txt") -> list[Path]:
+    """Return files under path matching the provided extension."""
+    return sorted(path.rglob(f"*{extension}"))
+
+
 def read_metadata(
-    path: Path, metafile: str, format: str, n_workers: Optional[int] = 1
+    path: Path, metafile: str, dataset_format: str, n_workers: Optional[int] = 1
 ) -> Tuple[Dict[str, str], Dict[str, str]]:
     """
     Reads metadata from different dataset formats and returns text and speaker dictionaries.
@@ -19,7 +24,7 @@ def read_metadata(
     Args:
         path: The base directory path of the dataset.
         metafile: The metadata file name.
-        format: The format of the dataset ('ljspeech', 'ljspeech_multi', 'vctk', 'pandas').
+        dataset_format: The format of the dataset ('ljspeech', 'ljspeech_multi', 'vctk', 'pandas').
         n_workers: Number of worker processes to use (for 'vctk' format).
 
     Returns:
@@ -30,13 +35,13 @@ def read_metadata(
     Raises:
         ValueError: If an unsupported format is specified.
     """
-    if format == "ljspeech":
+    if dataset_format == "ljspeech":
         return read_ljspeech_format(path / metafile, multispeaker=False)
-    if format == "ljspeech_multi":
+    if dataset_format == "ljspeech_multi":
         return read_ljspeech_format(path / metafile, multispeaker=True)
-    if format == "vctk":
+    if dataset_format == "vctk":
         return read_vctk_format(path, n_workers=n_workers or 1)
-    if format == "pandas":
+    if dataset_format == "pandas":
         return read_pandas_format(path / metafile)
     raise ValueError(
         f"Unsupported format '{format}'. Supported formats are: "

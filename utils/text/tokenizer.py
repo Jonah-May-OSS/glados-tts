@@ -1,6 +1,10 @@
+"""Tokenizer helpers for converting phoneme text to model token IDs."""
+
+from typing import Dict, cast
+
 import torch
+
 from .symbols import phonemes
-from typing import Dict
 
 
 class Tokenizer:
@@ -49,9 +53,9 @@ class Tokenizer:
 
         text = "".join(
             [
-                self.id_to_symbol[s.item()]
+                self.id_to_symbol[cast(int, s.item())]
                 for s in sequence
-                if s.item() in self.id_to_symbol
+                if cast(int, s.item()) in self.id_to_symbol
             ]
         )
         return text
