@@ -7,8 +7,8 @@ from typing import Any, cast
 
 import torch
 import torch_tensorrt
+from dp.preprocessing.text import LanguageTokenizer, Preprocessor, SequenceTokenizer
 from pydub import AudioSegment, playback
-from dp.preprocessing.text import Preprocessor, LanguageTokenizer, SequenceTokenizer
 
 from .utils.tools import (
     get_cleaner_and_tokenizer,
@@ -184,6 +184,7 @@ class TTSRunner:
                     Any,
                     torch_tensorrt.compile(
                         base_vocoder.eval().to(self.device),
+                        ir="torchscript",
                         inputs=[
                             torch_tensorrt.Input(
                                 min_shape=[1, 80, 1],
@@ -194,7 +195,6 @@ class TTSRunner:
                         ],
                         enabled_precisions={torch.float16},
                         truncate_long_and_double=True,
-                        calibrator=None,
                     ),
                 )
                 trt_mod.save(str(trt_vocoder_path))
