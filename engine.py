@@ -8,6 +8,7 @@ import urllib.parse
 from pathlib import Path
 
 from flask import Flask, abort, request, send_file
+from werkzeug.utils import secure_filename
 
 from glados import TTSRunner
 
@@ -44,20 +45,15 @@ def create_app() -> Flask:
             return "No input"
 
         line = urllib.parse.unquote(request.url[request.url.find("synthesize/") + 11 :])
-        filename = "GLaDOS-tts-" + line.replace(" ", "-")
-        filename = filename.replace("!", "")
-        filename = filename.replace("°c", "degrees celcius")
-        filename = filename.replace(",", "") + ".wav"
+        filename_core = line.replace(" ", "-")
+        filename_core = filename_core.replace("!", "")
+        filename_core = filename_core.replace("°c", "degrees celcius")
+        filename_core = filename_core.replace(",", "")
+        filename = f"GLaDOS-tts-{secure_filename(filename_core)}.wav"
         audio_root = AUDIO_DIR.resolve()
         cached_file = (AUDIO_DIR / filename).resolve(strict=False)
         try:
             cached_file.relative_to(audio_root)
-        except ValueError:
-            return "Invalid input", 400
-
-        audio_root = AUDIO_DIR.resolve()
-        try:
-            cached_file.resolve().relative_to(audio_root)
         except ValueError:
             abort(400, description="Invalid filename")
 
