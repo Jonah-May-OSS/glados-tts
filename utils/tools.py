@@ -14,7 +14,7 @@ from .text.tokenizer import Tokenizer
 @lru_cache(maxsize=1)
 def _get_cleaner_and_tokenizer(
     models_dir: str, device: str, cleaner_name: str, lang: str, use_phonemes: bool
-):
+) -> tuple[Cleaner, Tokenizer]:
     c = Cleaner(
         cleaner_name=cleaner_name,
         use_phonemes=use_phonemes,
@@ -28,7 +28,7 @@ def _get_cleaner_and_tokenizer(
 
 def get_cleaner_and_tokenizer(
     models_dir: str, device: str, cleaner_name: str, lang: str, use_phonemes: bool
-):
+) -> tuple[Cleaner, Tokenizer]:
     """Public wrapper for cached cleaner/tokenizer creation."""
     return _get_cleaner_and_tokenizer(
         models_dir, device, cleaner_name, lang, use_phonemes

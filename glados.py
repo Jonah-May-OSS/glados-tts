@@ -162,7 +162,7 @@ class TTSRunner:
                 self.taco_trt = True
             except Exception as e:
                 _LOGGER.error("Failed to compile TRT tacotron: %s", e)
-                self.tacotron_model = base_tacotron.to(self.device).eval()
+                self.glados = base_tacotron.to(self.device).eval()
         _LOGGER.info("Tacotron engine ready. TRT=%s", self.taco_trt)
 
         # Load or compile TRT Vocoder with extended profile
@@ -223,7 +223,8 @@ class TTSRunner:
             dummy_x = prepare_text("Warmup", self.device, self.cleaner, self.tokenizer)
             start = time.time()
             _ = cast(Any, self.glados).generate_jit(dummy_x, self.emb.half(), 1.0)
-            torch.cuda.empty_cache()
+            if self.device.type == "cuda":
+                torch.cuda.empty_cache()
             _LOGGER.debug("Dummy Tacotron took %.1f ms", (time.time() - start) * 1000)
 
         # Now do your existing bucket warm-up:
@@ -242,7 +243,8 @@ class TTSRunner:
                         cast(Any, self.glados).generate_jit(x, self.emb.half(), 1.0),
                     )["mel_post"],
                 ).to(self.device)
-                torch.cuda.empty_cache()
+                if self.device.type == "cuda":
+                    torch.cuda.empty_cache()
                 _LOGGER.debug(
                     "Warmup Tacotron bucket %s took %.1f ms",
                     bucket,
@@ -253,7 +255,8 @@ class TTSRunner:
                 mel = mel_out.float()
                 start_voc = time.time()
                 _ = cast(Any, self.vocoder)(mel)
-                torch.cuda.empty_cache()
+                if self.device.type == "cuda":
+                    torch.cuda.empty_cache()
                 _LOGGER.debug(
                     "Warmup Vocoder bucket %s took %.1f ms",
                     bucket,
@@ -280,12 +283,14 @@ class TTSRunner:
                 n_frames,
                 (time.time() - start_taco) * 1000,
             )
-            torch.cuda.synchronize()
+            if self.device.type == "cuda":
+                torch.cuda.synchronize()
 
             # Vocoder
             mel = out["mel_post"]
             n_frames = mel.shape[-1]
-            torch.cuda.empty_cache()
+            if self.device.type == "cuda":
+                torch.cuda.empty_cache()
             start_voc = time.time()
             audio_wave = cast(
                 torch.Tensor, cast(Any, self.vocoder)(mel.float()).squeeze()

@@ -12,30 +12,16 @@ from werkzeug.utils import secure_filename
 
 from glados import TTSRunner
 
-print("\033[1;94mINFO:\033[;97m Initializing TTS Engine...")
-
 BASE_DIR = Path(__file__).resolve().parent
 AUDIO_DIR = BASE_DIR / "audio"
 PORT = 8124
 CACHE = True
 
-runner = TTSRunner(use_p1=False, log=True, models_dir=BASE_DIR / "models")
-
-
-def glados_tts(text: str, key: str | None = None, alpha: float = 1.0) -> bool:
-    """Synthesize text to a temporary wav file."""
-    if key:
-        output_file = AUDIO_DIR / f"GLaDOS-tts-temp-output-{key}.wav"
-    else:
-        output_file = AUDIO_DIR / "GLaDOS-tts-temp-output.wav"
-
-    AUDIO_DIR.mkdir(parents=True, exist_ok=True)
-    runner.run_tts(text, alpha).export(str(output_file), format="wav")
-    return True
-
 
 def create_app() -> Flask:
     """Create a Flask application for TTS synthesis."""
+    print("\033[1;94mINFO:\033[;97m Initializing TTS Engine...")
+    runner = TTSRunner(use_p1=False, log=True, models_dir=BASE_DIR / "models")
     app = Flask(__name__)
 
     @app.route("/synthesize/", defaults={"text": ""})
@@ -63,10 +49,13 @@ def create_app() -> Flask:
             return send_file(cached_file)
 
         key = str(time.time())[7:]
-        if not glados_tts(line, key):
-            return "TTS Engine Failed"
-
         tempfile = AUDIO_DIR / f"GLaDOS-tts-temp-output-{key}.wav"
+        try:
+            AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+            runner.run_tts(line).export(str(tempfile), format="wav")
+        except Exception as exc:
+            print(f"\033[1;91mERROR:\033[;97m TTS Engine Failed: {exc}")
+            return "TTS Engine Failed"
         if len(line) < 200 and CACHE:
             shutil.move(tempfile, cached_file)
             return send_file(cached_file)
