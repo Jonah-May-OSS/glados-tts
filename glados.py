@@ -96,6 +96,39 @@ class TTSRunner:
             _LOGGER.warning(f"Failed to detect VRAM, using default workspace size: {e}")
             return default_workspace
 
+    @staticmethod
+    def _is_stale_trt_engine_error(err: Exception) -> bool:
+        message = str(err).lower()
+        stale_markers = (
+            "version tag does not match",
+            "serialized engine version",
+            "deserializecudaengine",
+            "unable to deserialize the tensorrt engine",
+            "serialization assertion",
+        )
+        return any(marker in message for marker in stale_markers)
+
+    def _prune_stale_trt_engine(
+        self, engine_path: Path, err: Exception, engine_name: str
+    ) -> None:
+        if not self._is_stale_trt_engine_error(err):
+            return
+
+        try:
+            engine_path.unlink(missing_ok=True)
+            _LOGGER.warning(
+                "Removed stale TRT %s engine cache at %s after deserialization failure.",
+                engine_name,
+                engine_path,
+            )
+        except Exception as cleanup_err:
+            _LOGGER.warning(
+                "Failed to remove stale TRT %s engine cache at %s: %s",
+                engine_name,
+                engine_path,
+                cleanup_err,
+            )
+
     def initialize_models(self, use_p1: bool = False):
         """Initialize models and perform warm-up."""
         _LOGGER.info("Initializing GLaDOS TTS models...")
@@ -146,6 +179,7 @@ class TTSRunner:
                 self.taco_trt = True
             except Exception as e:
                 _LOGGER.error("Failed to load TRT tacotron: %s", e)
+                self._prune_stale_trt_engine(trt_tacotron_path, e, "tacotron")
         if not self.taco_trt:
             _LOGGER.info("Compiling TRT tacotron...")
             try:
@@ -177,6 +211,7 @@ class TTSRunner:
                 self.voco_trt = True
             except Exception as e:
                 _LOGGER.error("Failed to load TRT vocoder: %s", e)
+                self._prune_stale_trt_engine(trt_vocoder_path, e, "vocoder")
         if not self.voco_trt:
             _LOGGER.info("Compiling TRT vocoder...")
             try:
