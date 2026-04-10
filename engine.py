@@ -48,7 +48,12 @@ def create_app() -> Flask:
         filename = filename.replace("!", "")
         filename = filename.replace("°c", "degrees celcius")
         filename = filename.replace(",", "") + ".wav"
-        cached_file = AUDIO_DIR / filename
+        audio_root = AUDIO_DIR.resolve()
+        cached_file = (AUDIO_DIR / filename).resolve(strict=False)
+        try:
+            cached_file.relative_to(audio_root)
+        except ValueError:
+            return "Invalid input", 400
 
         audio_root = AUDIO_DIR.resolve()
         try:
