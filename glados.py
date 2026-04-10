@@ -134,6 +134,23 @@ class TTSRunner:
                 cleanup_err,
             )
 
+    def _flatten_tacotron_rnn(self) -> None:
+        """Flatten Tacotron RNN parameters when available for better cuDNN performance."""
+        try:
+            glados_model = cast(Any, self.glados)
+            rnn = getattr(glados_model, "rnn", None)
+            if rnn is None and hasattr(glados_model, "module"):
+                rnn = getattr(glados_model.module, "rnn", None)
+
+            if rnn is None or not hasattr(rnn, "flatten_parameters"):
+                _LOGGER.debug("No Tacotron RNN flatten hook available.")
+                return
+
+            rnn.flatten_parameters()
+            _LOGGER.debug("Flattened Tacotron RNN parameters.")
+        except Exception as err:
+            _LOGGER.debug("Tacotron RNN flatten skipped: %s", err)
+
     def initialize_models(self, use_p1: bool = False):
         """Initialize models and perform warm-up."""
         _LOGGER.info("Initializing GLaDOS TTS models...")
@@ -245,6 +262,8 @@ class TTSRunner:
                 self.vocoder = base_vocoder.to(self.device).eval()
         _LOGGER.info("Vocoder engine ready. TRT=%s", self.voco_trt)
 
+        self._flatten_tacotron_rnn()
+
         # Warm up models
 
         self._warmup_models()
@@ -258,6 +277,7 @@ class TTSRunner:
 
     def _warmup_models(self):
         _LOGGER.info("Priming TRT engines with a minimal dummy run…")
+        self._flatten_tacotron_rnn()
         with torch.no_grad():
             # 1) Tacotron dummy: “Warmup” text → minimal mel
             dummy_x = prepare_text("Warmup", self.device, self.cleaner, self.tokenizer)
@@ -309,6 +329,7 @@ class TTSRunner:
         """Generate a full utterance audio segment with timing logs."""
         x = prepare_text(text, self.device, self.cleaner, self.tokenizer)
         emb = self.emb.half() if self.fp16 else self.emb
+        self._flatten_tacotron_rnn()
         with torch.no_grad():
             # Tacotron
 
