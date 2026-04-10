@@ -1,14 +1,15 @@
+"""Text normalization and optional phonemization utilities."""
+
 import re
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+from dp.phonemizer import Phonemizer
 from unidecode import unidecode
 
 from .numbers import normalize_numbers
 from .symbols import phonemes_set
-
-from dp.phonemizer import Phonemizer
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -99,10 +100,12 @@ def expand_abbreviations(text: str) -> str:
 
 
 def collapse_whitespace(text: str) -> str:
+    """Collapse consecutive whitespace into single spaces."""
     return " ".join(text.split())
 
 
 def no_cleaners(text: str) -> str:
+    """Return text unchanged."""
     return text
 
 
@@ -112,10 +115,6 @@ def english_cleaners(text: str) -> str:
     # Unicode → ASCII
 
     text = unidecode(text)
-
-    # Numeric temperature patterns (handles °, deg, uppercase/lowercase)
-
-    temp_pattern = r"(\d+(?:\.\d+)?)\s*(?:°|deg)\s*([FfCc])"
 
     # ENERGY UNITS: catch them while digits still exist
     # 4.485 kWh → 4.485 kilowatt hours
@@ -177,9 +176,10 @@ class Cleaner:
             ckpt = models_dir / "en_us_cmudict_ipa_forward.pt"
             if not ckpt.is_file():
                 raise FileNotFoundError(f"Phonemizer checkpoint not found at {ckpt}")
-            self.phonemizer = Phonemizer.from_checkpoint(ckpt, device=self.device)
+            self.phonemizer = Phonemizer.from_checkpoint(str(ckpt), device=self.device)
 
     def __call__(self, text: str) -> str:
+        """Clean text and optionally phonemize it using configured language."""
         cleaned = self.clean_func(text)
         if self.use_phonemes:
             phon = self.phonemizer(cleaned, lang=self.lang)
@@ -193,6 +193,7 @@ class Cleaner:
         models_dir: Path,
         device: str = "cpu",
     ) -> "Cleaner":
+        """Build a Cleaner instance from preprocessing configuration."""
         cfg = config["preprocessing"]
         return cls(
             cleaner_name=cfg["cleaner_name"],

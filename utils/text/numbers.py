@@ -6,7 +6,7 @@ to their spoken equivalents, which is essential for generating natural-sounding 
 """
 
 import re
-from typing import Match
+from typing import Any, Match, cast
 
 import inflect
 
@@ -26,17 +26,17 @@ _ordinal_re = re.compile(r"\b([0-9]+)(st|nd|rd|th)\b")
 _number_re = re.compile(r"\b[0-9]+\b")
 
 
-def _remove_commas(m: Match) -> str:
+def _remove_commas(m: Match[str]) -> str:
     """Remove commas from numbers."""
     return m.group(1).replace(",", "")
 
 
-def _expand_decimal_point(m: Match) -> str:
+def _expand_decimal_point(m: Match[str]) -> str:
     """Expand decimal numbers by replacing the decimal point with 'point'."""
     return m.group(1).replace(".", " point ")
 
 
-def _expand_dollars(m: Match) -> str:
+def _expand_dollars(m: Match[str]) -> str:
     """Expand dollar amounts to spoken words."""
     match = m.group(1)
     parts = match.replace(",", "").split(".")
@@ -50,15 +50,14 @@ def _expand_dollars(m: Match) -> str:
 
     if dollars and cents:
         return f"{dollars} {dollar_unit}, {cents} {cent_unit}"
-    elif dollars:
+    if dollars:
         return f"{dollars} {dollar_unit}"
-    elif cents:
+    if cents:
         return f"{cents} {cent_unit}"
-    else:
-        return "zero dollars"
+    return "zero dollars"
 
 
-def _expand_pounds(m: Match) -> str:
+def _expand_pounds(m: Match[str]) -> str:
     """Expand pound amounts to spoken words."""
     amount = m.group(1).replace(",", "")
     number = int(amount)
@@ -66,16 +65,16 @@ def _expand_pounds(m: Match) -> str:
     return f"{number} {pound_unit}"
 
 
-def _expand_ordinal(m: Match) -> str:
+def _expand_ordinal(m: Match[str]) -> str:
     """Expand ordinal numbers to words."""
-    return _inflect.number_to_words(m.group(0))
+    return str(_inflect.number_to_words(cast(Any, m.group(0))))
 
 
-def _expand_number(m: Match) -> str:
+def _expand_number(m: Match[str]) -> str:
     """Expand cardinal numbers to words."""
     num_str = m.group(0)
     num_int = int(num_str)
-    return _inflect.number_to_words(num_int, andword="")
+    return str(_inflect.number_to_words(cast(Any, num_int), andword=""))
 
 
 def normalize_numbers(text: str) -> str:

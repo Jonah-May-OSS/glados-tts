@@ -1,47 +1,45 @@
-import sys
+"""Standalone Flask wrapper for the GLaDOS TTS runner."""
+
 import os
-
-sys.path.insert(0, os.getcwd() + "/glados_tts")
-
+import shutil
+import sys
 import time
+import urllib.parse
+from pathlib import Path
 
-from glados import tts_runner
+from flask import Flask, request, send_file
+
+from glados import TTSRunner
 
 print("\033[1;94mINFO:\033[;97m Initializing TTS Engine...")
 
-glados = tts_runner(False, True)
+BASE_DIR = Path(__file__).resolve().parent
+AUDIO_DIR = BASE_DIR / "audio"
+PORT = 8124
+CACHE = True
+
+runner = TTSRunner(use_p1=False, log=True, models_dir=BASE_DIR / "models")
 
 
-def glados_tts(text, key=False, alpha=1.0):
-
+def glados_tts(text: str, key: str | None = None, alpha: float = 1.0) -> bool:
+    """Synthesize text to a temporary wav file."""
     if key:
-        output_file = "audio/GLaDOS-tts-temp-output-" + key + ".wav"
+        output_file = AUDIO_DIR / f"GLaDOS-tts-temp-output-{key}.wav"
     else:
-        output_file = "audio/GLaDOS-tts-temp-output.wav"
-    glados.run_tts(text, alpha).export(output_file, format="wav")
+        output_file = AUDIO_DIR / "GLaDOS-tts-temp-output.wav"
+
+    AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    runner.run_tts(text, alpha).export(str(output_file), format="wav")
     return True
 
 
-# If the script is run directly, assume remote engine
-
-if __name__ == "__main__":
-
-    # Remote Engine Veritables
-
-    PORT = 8124
-    CACHE = True
-
-    from flask import Flask, request, send_file
-    import urllib.parse
-    import shutil
-
-    print("\033[1;94mINFO:\033[;97m Initializing TTS Server...")
-
+def create_app() -> Flask:
+    """Create a Flask application for TTS synthesis."""
     app = Flask(__name__)
 
     @app.route("/synthesize/", defaults={"text": ""})
     @app.route("/synthesize/<path:text>")
-    def synthesize(text):
+    def synthesize(text: str):
         if text == "":
             return "No input"
 
@@ -50,35 +48,36 @@ if __name__ == "__main__":
         filename = filename.replace("!", "")
         filename = filename.replace("°c", "degrees celcius")
         filename = filename.replace(",", "") + ".wav"
-        file = os.getcwd() + "/audio/" + filename
+        cached_file = AUDIO_DIR / filename
 
-        # Check for Local Cache
-
-        if os.path.isfile(file):
-
-            # Update access time. This will allow for routine cleanups
-
-            os.utime(file, None)
+        if cached_file.is_file():
+            os.utime(cached_file, None)
             print("\033[1;94mINFO:\033[;97m The audio sample sent from cache.")
-            return send_file(file)
-        # Generate New Sample
+            return send_file(cached_file)
 
         key = str(time.time())[7:]
-        if glados_tts(line, key):
-            tempfile = os.getcwd() + "/audio/GLaDOS-tts-temp-output-" + key + ".wav"
-
-            # If the line isn't too long, store in cache
-            if len(line) < 200 and CACHE:
-                shutil.move(tempfile, file)
-                return send_file(file)
-            else:
-                try:
-                    return send_file(tempfile)
-                finally:
-                    os.remove(tempfile)
-        else:
+        if not glados_tts(line, key):
             return "TTS Engine Failed"
 
-    cli = sys.modules["flask.cli"]
-    cli.show_server_banner = lambda *x: None
-    app.run(host="0.0.0.0", port=PORT)
+        tempfile = AUDIO_DIR / f"GLaDOS-tts-temp-output-{key}.wav"
+        if len(line) < 200 and CACHE:
+            shutil.move(tempfile, cached_file)
+            return send_file(cached_file)
+
+        try:
+            return send_file(tempfile)
+        finally:
+            tempfile.unlink(missing_ok=True)
+
+    return app
+
+
+if __name__ == "__main__":
+    print("\033[1;94mINFO:\033[;97m Initializing TTS Server...")
+    flask_app = create_app()
+
+    cli = sys.modules.get("flask.cli")
+    if cli is not None:
+        setattr(cli, "show_server_banner", lambda *_args, **_kwargs: None)
+
+    flask_app.run(host="0.0.0.0", port=PORT)
