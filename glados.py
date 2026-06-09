@@ -1,6 +1,8 @@
 """Core GLaDOS TTS model runner and CLI test harness."""
 
 import logging
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, cast
@@ -20,6 +22,20 @@ _LOGGER = logging.getLogger(__name__)
 # Bucket sizes for Tacotron warm-ups
 
 BUCKET_SIZES = [8, 16, 32]
+
+# Script used to probe-load a serialized TRT engine in a throwaway subprocess.
+# A stale/incompatible engine can abort the interpreter with a native segfault
+# on deserialization, which a try/except in this process cannot catch.
+
+_TRT_PROBE_SRC = (
+    "import sys\n"
+    "import torch\n"
+    "import torch_tensorrt  # noqa: F401 - registers the TRT runtime/ops\n"
+    "module = torch.jit.load(sys.argv[1])\n"
+    "if sys.argv[2] != 'cpu':\n"
+    "    module = module.to(sys.argv[2])\n"
+    "module.eval()\n"
+)
 
 
 class TTSRunner:
@@ -113,16 +129,11 @@ class TTSRunner:
         )
         return any(marker in message for marker in stale_markers)
 
-    def _prune_stale_trt_engine(
-        self, engine_path: Path, err: Exception, engine_name: str
-    ) -> None:
-        if not self._is_stale_trt_engine_error(err):
-            return
-
+    def _remove_trt_engine(self, engine_path: Path, engine_name: str) -> None:
         try:
             engine_path.unlink(missing_ok=True)
             _LOGGER.warning(
-                "Removed stale TRT %s engine cache at %s after deserialization failure.",
+                "Removed stale TRT %s engine cache at %s.",
                 engine_name,
                 engine_path,
             )
@@ -133,6 +144,50 @@ class TTSRunner:
                 engine_path,
                 cleanup_err,
             )
+
+    def _prune_stale_trt_engine(
+        self, engine_path: Path, err: Exception, engine_name: str
+    ) -> None:
+        if not self._is_stale_trt_engine_error(err):
+            return
+        self._remove_trt_engine(engine_path, engine_name)
+
+    def _trt_engine_loads_safely(self, engine_path: Path) -> bool:
+        """Return True if the engine deserializes without crashing the process.
+
+        The engine is loaded in a throwaway subprocess first so that a native
+        crash (segfault on a stale/incompatible TensorRT engine) is contained
+        there instead of taking down the server. Only when the probe succeeds
+        do we load the engine for real in this process.
+        """
+        try:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    _TRT_PROBE_SRC,
+                    str(engine_path),
+                    self.device.type,
+                ],
+                capture_output=True,
+                timeout=180,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            _LOGGER.error(
+                "TRT engine probe for %s timed out; treating engine as unusable.",
+                engine_path,
+            )
+            return False
+        if result.returncode != 0:
+            _LOGGER.error(
+                "TRT engine probe for %s failed (exit %s): %s",
+                engine_path,
+                result.returncode,
+                result.stderr.decode(errors="replace").strip(),
+            )
+            return False
+        return True
 
     def _flatten_tacotron_rnn(self) -> None:
         """Flatten Tacotron RNN parameters when available for better cuDNN performance."""
@@ -193,15 +248,23 @@ class TTSRunner:
 
         self.taco_trt = False
         if trt_tacotron_path.exists():
-            _LOGGER.info("Loading TRT tacotron engine...")
-            try:
-                self.glados = (
-                    torch.jit.load(str(trt_tacotron_path)).to(self.device).eval()
+            if self._trt_engine_loads_safely(trt_tacotron_path):
+                _LOGGER.info("Loading TRT tacotron engine...")
+                try:
+                    self.glados = (
+                        torch.jit.load(str(trt_tacotron_path)).to(self.device).eval()
+                    )
+                    self.taco_trt = True
+                except Exception as e:
+                    _LOGGER.error("Failed to load TRT tacotron: %s", e)
+                    self._prune_stale_trt_engine(trt_tacotron_path, e, "tacotron")
+            else:
+                _LOGGER.error(
+                    "TRT tacotron engine at %s crashed a load probe; "
+                    "removing it and recompiling.",
+                    trt_tacotron_path,
                 )
-                self.taco_trt = True
-            except Exception as e:
-                _LOGGER.error("Failed to load TRT tacotron: %s", e)
-                self._prune_stale_trt_engine(trt_tacotron_path, e, "tacotron")
+                self._remove_trt_engine(trt_tacotron_path, "tacotron")
         if not self.taco_trt:
             _LOGGER.info("Compiling TRT tacotron...")
             try:
@@ -225,15 +288,23 @@ class TTSRunner:
 
         self.voco_trt = False
         if trt_vocoder_path.exists():
-            _LOGGER.info("Loading TRT vocoder engine...")
-            try:
-                self.vocoder = (
-                    torch.jit.load(str(trt_vocoder_path)).to(self.device).eval()
+            if self._trt_engine_loads_safely(trt_vocoder_path):
+                _LOGGER.info("Loading TRT vocoder engine...")
+                try:
+                    self.vocoder = (
+                        torch.jit.load(str(trt_vocoder_path)).to(self.device).eval()
+                    )
+                    self.voco_trt = True
+                except Exception as e:
+                    _LOGGER.error("Failed to load TRT vocoder: %s", e)
+                    self._prune_stale_trt_engine(trt_vocoder_path, e, "vocoder")
+            else:
+                _LOGGER.error(
+                    "TRT vocoder engine at %s crashed a load probe; "
+                    "removing it and recompiling.",
+                    trt_vocoder_path,
                 )
-                self.voco_trt = True
-            except Exception as e:
-                _LOGGER.error("Failed to load TRT vocoder: %s", e)
-                self._prune_stale_trt_engine(trt_vocoder_path, e, "vocoder")
+                self._remove_trt_engine(trt_vocoder_path, "vocoder")
         if not self.voco_trt:
             _LOGGER.info("Compiling TRT vocoder...")
             try:
