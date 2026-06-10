@@ -567,7 +567,10 @@ class TTSRunner:
         exhausted or closed; consumers must drain or close it promptly.
         """
         x = prepare_text(text, self.device, self.cleaner, self.tokenizer)
-        debug = _LOGGER.isEnabledFor(logging.DEBUG)
+        # Timing (and the cuda sync needed to make it accurate) is opt-in:
+        # either the instance was created with log=True or debug logging is
+        # enabled.
+        do_timing = self.log or _LOGGER.isEnabledFor(logging.DEBUG)
         with self._infer_lock:
             # Tacotron
 
@@ -575,7 +578,7 @@ class TTSRunner:
                 start_taco = time.time()
                 mel = self._generate_mel(x, alpha).float()
             n_frames = mel.shape[-1]
-            if debug:
+            if do_timing:
                 if self.device.type == "cuda":
                     # Sync only when timing is reported; it stalls the
                     # pipeline for no benefit otherwise.
@@ -592,7 +595,7 @@ class TTSRunner:
             for start in range(0, n_frames, VOCODER_CHUNK_FRAMES):
                 end = min(start + VOCODER_CHUNK_FRAMES, n_frames)
                 yield self._vocode_window(mel, start, end)
-            if debug:
+            if do_timing:
                 _LOGGER.debug(
                     "Vocoder generated audio from mel with %s frames in %.1f ms",
                     n_frames,
