@@ -73,7 +73,6 @@ class TTSRunner:
         self.log = log
         self.models_dir = models_dir
         self.fp16 = False
-        self.taco_trt = False
         self.voco_trt = False
         self.initialized = False
         self.glados: Any = None
@@ -268,49 +267,40 @@ class TTSRunner:
         trt_vocoder_path = self.models_dir / "vocoder-trt.ts"
         _LOGGER.debug("Looking for TRT vocoder at: %s", trt_vocoder_path)
 
-        # Load or compile TRT Tacotron with extended profile
+        # Load Tacotron. TensorRT is intentionally not used here: inference
+        # goes through the custom generate_jit() method, which graph
+        # compilers never intercept (torch.compile only wraps
+        # forward/__call__), so the previous "TRT tacotron" path silently ran
+        # the plain TorchScript module — and the engine file it cached was
+        # just a copy of the base model, since OptimizedModule.save()
+        # forwards to the original module before any (lazy) compilation has
+        # happened. Apply torch.jit's inference optimizations (freezing +
+        # fusion) to generate_jit instead, which actually runs.
 
-        self.taco_trt = False
         if trt_tacotron_path.exists():
-            if self._trt_engine_loads_safely(trt_tacotron_path):
-                _LOGGER.info("Loading TRT tacotron engine...")
-                try:
-                    self.glados = (
-                        torch.jit.load(str(trt_tacotron_path)).to(self.device).eval()
-                    )
-                    self.taco_trt = True
-                except Exception as e:
-                    _LOGGER.error("Failed to load TRT tacotron: %s", e)
-                    self._prune_stale_trt_engine(trt_tacotron_path, e, "tacotron")
-            else:
-                _LOGGER.error(
-                    "TRT tacotron engine at %s crashed a load probe; "
-                    "removing it and recompiling.",
-                    trt_tacotron_path,
-                )
-                self._remove_trt_engine(trt_tacotron_path, "tacotron")
-        if not self.taco_trt:
-            # The base TorchScript model is only loaded when there is no
-            # usable cached engine, keeping startup time and peak VRAM down.
-            base_tacotron = torch.jit.load(str(tacotron_path), map_location=self.device)
-            _LOGGER.info("Compiling TRT tacotron...")
-            try:
-                # Compile with TensorRT backend through torch.compile.
-                trt_mod = cast(
-                    Any,
-                    torch.compile(
-                        base_tacotron.eval().to(self.device),
-                        backend="tensorrt",
-                    ),
-                )
-                trt_mod.save(str(trt_tacotron_path))
-                self.glados = trt_mod.eval().to(self.device)
-                self.taco_trt = True
-            except Exception as e:
-                _LOGGER.error("Failed to compile TRT tacotron: %s", e)
-                self.glados = base_tacotron.to(self.device).eval()
-            del base_tacotron
-        _LOGGER.info("Tacotron engine ready. TRT=%s", self.taco_trt)
+            # Cache files from older releases are mislabeled copies of the
+            # base model; drop them so they stop wasting disk and load time.
+            self._remove_trt_engine(trt_tacotron_path, "tacotron")
+        base_tacotron = (
+            torch.jit.load(str(tacotron_path), map_location=self.device)
+            .to(self.device)
+            .eval()
+        )
+        try:
+            self.glados = torch.jit.optimize_for_inference(
+                base_tacotron, other_methods=["generate_jit"]
+            )
+            taco_optimized = True
+        except Exception as e:
+            _LOGGER.warning(
+                "torch.jit.optimize_for_inference failed for Tacotron, "
+                "using plain TorchScript: %s",
+                e,
+            )
+            self.glados = base_tacotron
+            taco_optimized = False
+        del base_tacotron
+        _LOGGER.info("Tacotron ready. optimized=%s", taco_optimized)
 
         # Load or compile TRT Vocoder with extended profile
 
