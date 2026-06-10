@@ -3,7 +3,9 @@
 import logging
 import subprocess
 import sys
+import threading
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, cast
 
@@ -23,11 +25,35 @@ _LOGGER = logging.getLogger(__name__)
 
 BUCKET_SIZES = [8, 16, 32]
 
+# Output audio format produced by the vocoder.
+
+SAMPLE_RATE = 22050
+SAMPLE_WIDTH = 2
+CHANNELS = 1
+
+# Long mels are vocoded in windows so the first audio bytes can be streamed
+# before the whole utterance is vocoded. Each window carries extra context
+# frames on both sides that are trimmed from the output, so HiFiGAN's
+# receptive field never sees a hard edge inside the kept region. The window
+# size matches the TRT profile's opt_shape (500 frames); window + context
+# stays well under its max_shape (2000 frames), which also lets utterances
+# longer than the profile maximum synthesize instead of failing.
+
+VOCODER_CHUNK_FRAMES = 500
+VOCODER_CONTEXT_FRAMES = 32
+
+# Token-length profile for the Tacotron TRT engine. Inputs longer than the
+# max fall back to the TorchScript path at runtime.
+
+TACOTRON_TRT_MIN_TOKENS = 1
+TACOTRON_TRT_OPT_TOKENS = 128
+TACOTRON_TRT_MAX_TOKENS = 512
+
 # Script used to probe-load a serialized TRT engine in a throwaway subprocess.
 # A stale/incompatible engine can abort the interpreter with a native segfault
 # on deserialization, which a try/except in this process cannot catch.
 
-_TRT_PROBE_SRC = (
+_trt_probe_src = (
     "import sys\n"
     "import torch\n"
     "import torch_tensorrt  # noqa: F401 - registers the TRT runtime/ops\n"
@@ -38,8 +64,32 @@ _TRT_PROBE_SRC = (
 )
 
 
+class _TacotronGenerate(torch.nn.Module):
+    """Expose Tacotron's generate_jit() as forward() for TensorRT.
+
+    The TorchScript-IR TensorRT frontend only compiles a module's forward
+    method, while Tacotron inference goes through the custom generate_jit()
+    method - which is also invisible to torch.compile (it only wraps
+    forward/__call__). Wrapping generate_jit in a forward makes the graph
+    reachable for partial TRT conversion. The speaker embedding is baked in
+    as a buffer and the speech rate is fixed at alpha=1.0 (other alphas use
+    the TorchScript path at runtime), so forward only takes the token tensor.
+    """
+
+    def __init__(self, inner: torch.nn.Module, emb: torch.Tensor) -> None:
+        super().__init__()
+        self.inner = inner
+        self.emb: torch.Tensor
+        self.register_buffer("emb", emb)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Generate the post-net mel-spectrogram for a token tensor."""
+        out = self.inner.generate_jit(x, self.emb, 1.0)  # type: ignore[operator]
+        return out["mel_post"]
+
+
 class TTSRunner:
-    """Text-to-Speech runner for GLaDOS TTS with streaming support and optional TRT Vocoder."""
+    """Text-to-Speech runner for GLaDOS TTS with streaming support and optional TRT acceleration."""
 
     def __init__(
         self,
@@ -57,9 +107,19 @@ class TTSRunner:
         self.taco_trt = False
         self.voco_trt = False
         self.initialized = False
+        # generate_jit-capable TorchScript Tacotron, loaded lazily when the
+        # TRT wrapper is active (only needed for alpha != 1.0 or over-length
+        # inputs).
         self.glados: Any = None
+        # TRT-compiled wrapper: forward(x) -> mel_post, alpha = 1.0 baked in.
+        self.glados_trt: Any = None
         self.vocoder: Any = None
         self.emb: torch.Tensor = torch.empty(0)
+        self.tacotron_path: Path | None = None
+        # TRT execution contexts are not safe for concurrent execution, so all
+        # inference is serialized behind this lock (the GPU would serialize the
+        # work anyway).
+        self._infer_lock = threading.Lock()
 
         # Device selection
 
@@ -165,7 +225,7 @@ class TTSRunner:
                 [
                     sys.executable,
                     "-c",
-                    _TRT_PROBE_SRC,
+                    _trt_probe_src,
                     str(engine_path),
                     self.device.type,
                 ],
@@ -206,6 +266,56 @@ class TTSRunner:
         except Exception as err:
             _LOGGER.debug("Tacotron RNN flatten skipped: %s", err)
 
+    def _load_tacotron_jit(self) -> Any:
+        """Load the base TorchScript Tacotron onto the device."""
+        assert self.tacotron_path is not None
+        return (
+            torch.jit.load(str(self.tacotron_path), map_location=self.device)
+            .to(self.device)
+            .eval()
+        )
+
+    def _optimize_tacotron_jit(self, base_tacotron: Any) -> Any:
+        """Apply torch.jit inference optimizations to generate_jit."""
+        try:
+            return torch.jit.optimize_for_inference(
+                base_tacotron, other_methods=["generate_jit"]
+            )
+        except Exception as err:
+            _LOGGER.warning(
+                "torch.jit.optimize_for_inference failed for Tacotron, "
+                "using plain TorchScript: %s",
+                err,
+            )
+            return base_tacotron
+
+    def _ensure_tacotron_jit(self) -> Any:
+        """Return the generate_jit-capable Tacotron, loading it lazily.
+
+        When a cached TRT engine is in use, the base model is not loaded at
+        startup; it is only needed for alpha != 1.0 or inputs longer than
+        the TRT profile.
+        """
+        if self.glados is None:
+            _LOGGER.info("Lazily loading TorchScript Tacotron...")
+            self.glados = self._optimize_tacotron_jit(self._load_tacotron_jit())
+            self._flatten_tacotron_rnn()
+        return self.glados
+
+    def _generate_mel(self, x: torch.Tensor, alpha: float) -> torch.Tensor:
+        """Generate a mel-spectrogram, preferring the TRT engine.
+
+        The TRT wrapper bakes in alpha=1.0 and is compiled for inputs up to
+        TACOTRON_TRT_MAX_TOKENS; other requests use the TorchScript path.
+        """
+        if self.taco_trt and alpha == 1.0 and x.shape[-1] <= TACOTRON_TRT_MAX_TOKENS:
+            return cast(torch.Tensor, cast(Any, self.glados_trt)(x))
+        out = cast(
+            dict[str, torch.Tensor],
+            self._ensure_tacotron_jit().generate_jit(x, self.emb, alpha),
+        )
+        return out["mel_post"]
+
     def initialize_models(self, use_p1: bool = False):
         """Initialize models and perform warm-up."""
         _LOGGER.info("Initializing GLaDOS TTS models...")
@@ -228,84 +338,124 @@ class TTSRunner:
         emb_path = self.models_dir / "emb" / emb_filename
         if not emb_path.is_file():
             raise FileNotFoundError(f"Embedding not found at {emb_path}")
-        self.emb = torch.load(str(emb_path), map_location=self.device).to(self.device)
+        emb = torch.load(str(emb_path), map_location=self.device).to(self.device)
+        # One embedding dtype everywhere (fp16 on CUDA): it is baked into the
+        # TRT Tacotron wrapper at compile time and passed to the TorchScript
+        # path at runtime, so warm-up and inference exercise the same kernels.
+        self.fp16 = self.device.type == "cuda"
+        self.emb = emb.half() if self.fp16 else emb.float()
 
         # Model file paths
 
-        tacotron_path = self.models_dir / "glados-new.pt"
+        self.tacotron_path = self.models_dir / "glados-new.pt"
         vocoder_path = self.models_dir / "vocoder-gpu.pt"
-        trt_tacotron_path = self.models_dir / "tacotron-trt.ts"
-        _LOGGER.debug("Looking for Tacotron at: %s", tacotron_path)
+        # The engine bakes in the speaker embedding, so the cache is
+        # per-voice.
+        trt_tacotron_path = (
+            self.models_dir / f"tacotron-trt-{'p1' if use_p1 else 'p2'}.ts"
+        )
+        _LOGGER.debug("Looking for Tacotron at: %s", self.tacotron_path)
         trt_vocoder_path = self.models_dir / "vocoder-trt.ts"
         _LOGGER.debug("Looking for TRT vocoder at: %s", trt_vocoder_path)
 
-        # Load TorchScript models
+        # Drop the legacy engine cache: in older releases the Tacotron "TRT
+        # compile" never ran (inference used generate_jit, which torch.compile
+        # does not intercept, and the engine was saved before the lazy
+        # compilation could trigger), so tacotron-trt.ts is just a mislabeled
+        # copy of glados-new.pt.
 
-        base_tacotron = torch.jit.load(str(tacotron_path), map_location=self.device)
-        base_vocoder = torch.jit.load(str(vocoder_path), map_location=self.device)
+        legacy_trt_tacotron_path = self.models_dir / "tacotron-trt.ts"
+        if legacy_trt_tacotron_path.exists():
+            self._remove_trt_engine(legacy_trt_tacotron_path, "legacy tacotron")
 
-        # Load or compile TRT Tacotron with extended profile
+        self._init_tacotron(trt_tacotron_path)
+        self._init_vocoder(vocoder_path, trt_vocoder_path)
 
-        self.taco_trt = False
-        if trt_tacotron_path.exists():
-            if self._trt_engine_loads_safely(trt_tacotron_path):
-                _LOGGER.info("Loading TRT tacotron engine...")
-                try:
-                    self.glados = (
-                        torch.jit.load(str(trt_tacotron_path)).to(self.device).eval()
-                    )
-                    self.taco_trt = True
-                except Exception as e:
-                    _LOGGER.error("Failed to load TRT tacotron: %s", e)
-                    self._prune_stale_trt_engine(trt_tacotron_path, e, "tacotron")
-            else:
-                _LOGGER.error(
-                    "TRT tacotron engine at %s crashed a load probe; "
-                    "removing it and recompiling.",
-                    trt_tacotron_path,
-                )
-                self._remove_trt_engine(trt_tacotron_path, "tacotron")
+        if self.glados is not None:
+            self._flatten_tacotron_rnn()
+
+        # Warm up models
+
+        self._warmup_models()
+        # Set initialized flag
+
+        self.initialized = True
+
+    def _load_cached_trt_engine(self, engine_path: Path, engine_name: str) -> Any:
+        """Load a cached TRT engine, pruning it if it is stale or crashes."""
+        if not engine_path.exists():
+            return None
+        if not self._trt_engine_loads_safely(engine_path):
+            _LOGGER.error(
+                "TRT %s engine at %s crashed a load probe; "
+                "removing it and recompiling.",
+                engine_name,
+                engine_path,
+            )
+            self._remove_trt_engine(engine_path, engine_name)
+            return None
+        _LOGGER.info("Loading TRT %s engine...", engine_name)
+        try:
+            return torch.jit.load(str(engine_path)).to(self.device).eval()
+        except Exception as err:
+            _LOGGER.error("Failed to load TRT %s: %s", engine_name, err)
+            self._prune_stale_trt_engine(engine_path, err, engine_name)
+            return None
+
+    def _init_tacotron(self, trt_tacotron_path: Path) -> None:
+        """Load or compile the TRT Tacotron wrapper.
+
+        The wrapper exposes forward(x) -> mel_post with alpha=1.0 baked in
+        (see _TacotronGenerate). Runtime falls back to the TorchScript
+        generate_jit path for alpha != 1.0 or over-length inputs.
+        """
+        self.glados_trt = self._load_cached_trt_engine(trt_tacotron_path, "tacotron")
+        self.taco_trt = self.glados_trt is not None
         if not self.taco_trt:
+            base_tacotron = self._load_tacotron_jit()
             _LOGGER.info("Compiling TRT tacotron...")
             try:
-                # Compile with TensorRT backend through torch.compile.
+                wrapper = torch.jit.script(_TacotronGenerate(base_tacotron, self.emb))
                 trt_mod = cast(
                     Any,
-                    torch.compile(
-                        base_tacotron.eval().to(self.device),
-                        backend="tensorrt",
+                    torch_tensorrt.compile(
+                        wrapper.eval().to(self.device),
+                        ir="torchscript",
+                        inputs=[
+                            torch_tensorrt.Input(
+                                min_shape=[1, TACOTRON_TRT_MIN_TOKENS],
+                                opt_shape=[1, TACOTRON_TRT_OPT_TOKENS],
+                                max_shape=[1, TACOTRON_TRT_MAX_TOKENS],
+                                dtype=torch.int64,
+                            )
+                        ],
+                        enabled_precisions={torch.float16},
+                        truncate_long_and_double=True,
+                        # The autoregressive decoder loop cannot run inside
+                        # TRT; convertible subgraphs become TRT engines and
+                        # the rest stays TorchScript.
+                        require_full_compilation=False,
                     ),
                 )
                 trt_mod.save(str(trt_tacotron_path))
-                self.glados = trt_mod.eval().to(self.device)
+                self.glados_trt = trt_mod.eval().to(self.device)
                 self.taco_trt = True
             except Exception as e:
                 _LOGGER.error("Failed to compile TRT tacotron: %s", e)
-                self.glados = base_tacotron.to(self.device).eval()
+            if self.taco_trt:
+                # Free the base model; alpha != 1.0 or over-length requests
+                # reload it lazily via _ensure_tacotron_jit().
+                del base_tacotron
+            else:
+                self.glados = self._optimize_tacotron_jit(base_tacotron)
         _LOGGER.info("Tacotron engine ready. TRT=%s", self.taco_trt)
 
-        # Load or compile TRT Vocoder with extended profile
-
-        self.voco_trt = False
-        if trt_vocoder_path.exists():
-            if self._trt_engine_loads_safely(trt_vocoder_path):
-                _LOGGER.info("Loading TRT vocoder engine...")
-                try:
-                    self.vocoder = (
-                        torch.jit.load(str(trt_vocoder_path)).to(self.device).eval()
-                    )
-                    self.voco_trt = True
-                except Exception as e:
-                    _LOGGER.error("Failed to load TRT vocoder: %s", e)
-                    self._prune_stale_trt_engine(trt_vocoder_path, e, "vocoder")
-            else:
-                _LOGGER.error(
-                    "TRT vocoder engine at %s crashed a load probe; "
-                    "removing it and recompiling.",
-                    trt_vocoder_path,
-                )
-                self._remove_trt_engine(trt_vocoder_path, "vocoder")
+    def _init_vocoder(self, vocoder_path: Path, trt_vocoder_path: Path) -> None:
+        """Load or compile the TRT Vocoder with an extended shape profile."""
+        self.vocoder = self._load_cached_trt_engine(trt_vocoder_path, "vocoder")
+        self.voco_trt = self.vocoder is not None
         if not self.voco_trt:
+            base_vocoder = torch.jit.load(str(vocoder_path), map_location=self.device)
             _LOGGER.info("Compiling TRT vocoder...")
             try:
                 trt_mod = cast(
@@ -331,16 +481,8 @@ class TTSRunner:
             except Exception as e:
                 _LOGGER.error("Failed to compile TRT vocoder: %s", e)
                 self.vocoder = base_vocoder.to(self.device).eval()
+            del base_vocoder
         _LOGGER.info("Vocoder engine ready. TRT=%s", self.voco_trt)
-
-        self._flatten_tacotron_rnn()
-
-        # Warm up models
-
-        self._warmup_models()
-        # Set initialized flag
-
-        self.initialized = True
 
     def quantize_model(self, model: torch.jit.ScriptModule) -> torch.jit.ScriptModule:
         """Retained for API compatibility; returns eval model on current device."""
@@ -348,14 +490,11 @@ class TTSRunner:
 
     def _warmup_models(self):
         _LOGGER.info("Priming TRT engines with a minimal dummy run…")
-        self._flatten_tacotron_rnn()
         with torch.no_grad():
             # 1) Tacotron dummy: “Warmup” text → minimal mel
             dummy_x = prepare_text("Warmup", self.device, self.cleaner, self.tokenizer)
             start = time.time()
-            _ = cast(Any, self.glados).generate_jit(dummy_x, self.emb.half(), 1.0)
-            if self.device.type == "cuda":
-                torch.cuda.empty_cache()
+            _ = self._generate_mel(dummy_x, 1.0)
             _LOGGER.debug("Dummy Tacotron took %.1f ms", (time.time() - start) * 1000)
 
         # Now do your existing bucket warm-up:
@@ -367,15 +506,7 @@ class TTSRunner:
 
                 # Tacotron timing
                 start_taco = time.time()
-                mel_out = cast(
-                    torch.Tensor,
-                    cast(
-                        dict[str, torch.Tensor],
-                        cast(Any, self.glados).generate_jit(x, self.emb.half(), 1.0),
-                    )["mel_post"],
-                ).to(self.device)
-                if self.device.type == "cuda":
-                    torch.cuda.empty_cache()
+                mel_out = self._generate_mel(x, 1.0).to(self.device)
                 _LOGGER.debug(
                     "Warmup Tacotron bucket %s took %.1f ms",
                     bucket,
@@ -386,56 +517,100 @@ class TTSRunner:
                 mel = mel_out.float()
                 start_voc = time.time()
                 _ = cast(Any, self.vocoder)(mel)
-                if self.device.type == "cuda":
-                    torch.cuda.empty_cache()
                 _LOGGER.debug(
                     "Warmup Vocoder bucket %s took %.1f ms",
                     bucket,
                     (time.time() - start_voc) * 1000,
                 )
 
+        if self.device.type == "cuda":
+            # One-time release of compilation/warm-up scratch memory. Never do
+            # this on the request path: it forces the caching allocator to
+            # re-allocate from scratch and adds latency to every request.
+            torch.cuda.empty_cache()
         _LOGGER.info("Model warm-ups complete.")
+
+    @staticmethod
+    def _pcm_bytes(audio_wave: torch.Tensor) -> bytes:
+        """Convert a [-1, 1] float waveform tensor to int16 PCM bytes."""
+        return (
+            (audio_wave.float().clamp(-1.0, 1.0) * 32767.0)
+            .cpu()
+            .numpy()
+            .astype("int16")
+            .tobytes()
+        )
+
+    def _vocode_window(self, mel: torch.Tensor, start: int, end: int) -> bytes:
+        """Vocode mel frames [start, end) with trimmed context padding."""
+        n_frames = mel.shape[-1]
+        ctx_start = max(0, start - VOCODER_CONTEXT_FRAMES)
+        ctx_end = min(n_frames, end + VOCODER_CONTEXT_FRAMES)
+        with torch.no_grad():
+            audio = cast(
+                torch.Tensor,
+                cast(Any, self.vocoder)(mel[:, :, ctx_start:ctx_end]),
+            ).squeeze()
+        # Trim the context regions; assumes the vocoder upsamples by an
+        # integer hop per frame (true for HiFiGAN).
+        hop = audio.shape[-1] // (ctx_end - ctx_start)
+        front = (start - ctx_start) * hop
+        back = (ctx_end - end) * hop
+        return self._pcm_bytes(audio[front : audio.shape[-1] - back])
+
+    def run_tts_stream(self, text: str, alpha: float = 1.0) -> Iterator[bytes]:
+        """Synthesize text, yielding int16 PCM as the vocoder produces it.
+
+        The mel-spectrogram is vocoded in windows (see VOCODER_CHUNK_FRAMES)
+        so the first audio bytes are available before the whole utterance has
+        been vocoded. The inference lock is held until the generator is
+        exhausted or closed; consumers must drain or close it promptly.
+        """
+        x = prepare_text(text, self.device, self.cleaner, self.tokenizer)
+        # Timing (and the cuda sync needed to make it accurate) is opt-in:
+        # either the instance was created with log=True or debug logging is
+        # enabled.
+        do_timing = self.log or _LOGGER.isEnabledFor(logging.DEBUG)
+        with self._infer_lock:
+            # Tacotron
+
+            with torch.no_grad():
+                start_taco = time.time()
+                mel = self._generate_mel(x, alpha).float()
+            n_frames = mel.shape[-1]
+            if do_timing:
+                if self.device.type == "cuda":
+                    # Sync only when timing is reported; it stalls the
+                    # pipeline for no benefit otherwise.
+                    torch.cuda.synchronize()
+                _LOGGER.debug(
+                    "Tacotron generated mel with %s frames in %.1f ms",
+                    n_frames,
+                    (time.time() - start_taco) * 1000,
+                )
+
+            # Vocoder, windowed over the mel frames
+
+            start_voc = time.time()
+            for start in range(0, n_frames, VOCODER_CHUNK_FRAMES):
+                end = min(start + VOCODER_CHUNK_FRAMES, n_frames)
+                yield self._vocode_window(mel, start, end)
+            if do_timing:
+                _LOGGER.debug(
+                    "Vocoder generated audio from mel with %s frames in %.1f ms",
+                    n_frames,
+                    (time.time() - start_voc) * 1000,
+                )
 
     def run_tts(self, text: str, alpha: float = 1.0) -> AudioSegment:
         """Generate a full utterance audio segment with timing logs."""
-        x = prepare_text(text, self.device, self.cleaner, self.tokenizer)
-        emb = self.emb.half() if self.fp16 else self.emb
-        self._flatten_tacotron_rnn()
-        with torch.no_grad():
-            # Tacotron
-
-            start_taco = time.time()
-            out = cast(
-                dict[str, torch.Tensor],
-                cast(Any, self.glados).generate_jit(x, emb, alpha),
-            )
-            n_frames = out["mel_post"].shape[-1]
-            _LOGGER.debug(
-                "Tacotron generated mel with %s frames in %.1f ms",
-                n_frames,
-                (time.time() - start_taco) * 1000,
-            )
-            if self.device.type == "cuda":
-                torch.cuda.synchronize()
-
-            # Vocoder
-            mel = out["mel_post"]
-            n_frames = mel.shape[-1]
-            if self.device.type == "cuda":
-                torch.cuda.empty_cache()
-            start_voc = time.time()
-            audio_wave = cast(
-                torch.Tensor, cast(Any, self.vocoder)(mel.float()).squeeze()
-            )
-            voc_ms = (time.time() - start_voc) * 1000
-            _LOGGER.debug(
-                "Vocoder generated audio from mel with %s frames in %.1f ms",
-                n_frames,
-                voc_ms,
-            )
-
-        pcm = (audio_wave * 32768.0).cpu().numpy().astype("int16").tobytes()
-        return AudioSegment(pcm, frame_rate=22050, sample_width=2, channels=1)
+        pcm = b"".join(self.run_tts_stream(text, alpha))
+        return AudioSegment(
+            pcm,
+            frame_rate=SAMPLE_RATE,
+            sample_width=SAMPLE_WIDTH,
+            channels=CHANNELS,
+        )
 
     def play_audio(self, audio: AudioSegment):
         """Play a generated audio segment to the default output device."""
