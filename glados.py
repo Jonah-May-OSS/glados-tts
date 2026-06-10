@@ -53,7 +53,7 @@ TACOTRON_TRT_MAX_TOKENS = 512
 # A stale/incompatible engine can abort the interpreter with a native segfault
 # on deserialization, which a try/except in this process cannot catch.
 
-_TRT_PROBE_SRC = (
+_trt_probe_src = (
     "import sys\n"
     "import torch\n"
     "import torch_tensorrt  # noqa: F401 - registers the TRT runtime/ops\n"
@@ -224,7 +224,7 @@ class TTSRunner:
                 [
                     sys.executable,
                     "-c",
-                    _TRT_PROBE_SRC,
+                    _trt_probe_src,
                     str(engine_path),
                     self.device.type,
                 ],
