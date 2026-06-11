@@ -1,5 +1,6 @@
 """Core GLaDOS TTS model runner and CLI test harness."""
 
+import gc
 import logging
 import subprocess
 import sys
@@ -135,47 +136,6 @@ class TTSRunner:
 
         if not self.initialized:
             self.initialize_models(use_p1)
-
-    def _get_workspace_size(self) -> int:
-        """
-        Calculate TensorRT workspace size dynamically based on available VRAM.
-        Returns workspace size in bytes.
-        """
-        default_workspace = 2 * 1024 * 1024 * 1024  # 2GB default
-        min_workspace = 1 * 1024 * 1024 * 1024  # 1GB minimum
-        max_workspace = 4 * 1024 * 1024 * 1024  # 4GB maximum
-
-        if self.device.type != "cuda":
-            _LOGGER.info(
-                "Non-CUDA device (%s), using default workspace size: 2GB",
-                self.device.type,
-            )
-            return default_workspace
-
-        try:
-            # Get total VRAM from the specific device being used
-            device_index = self.device.index if self.device.index is not None else 0
-            total_memory = torch.cuda.get_device_properties(device_index).total_memory
-            # Use 40% of total VRAM as a conservative workspace size
-            calculated_workspace = int(total_memory * 0.4)
-
-            # Clamp to min/max bounds
-            workspace_size = max(
-                min_workspace, min(calculated_workspace, max_workspace)
-            )
-
-            _LOGGER.info(
-                "CUDA device %s: Total VRAM: %.2fGB, Setting workspace size to %.2fGB",
-                device_index,
-                total_memory / (1024**3),
-                workspace_size / (1024**3),
-            )
-            return workspace_size
-        except Exception as e:
-            _LOGGER.warning(
-                "Failed to detect VRAM, using default workspace size: %s", e
-            )
-            return default_workspace
 
     @staticmethod
     def _is_stale_trt_engine_error(err: Exception) -> bool:
@@ -402,6 +362,21 @@ class TTSRunner:
             self._prune_stale_trt_engine(engine_path, err, engine_name)
             return None
 
+    def _release_cuda_cache(self) -> None:
+        """Return torch's cached-but-unused VRAM to the driver before a build.
+
+        PyTorch and TensorRT use separate allocators: TRT pulls build scratch
+        and constant regions straight from the CUDA driver, while torch holds
+        freed blocks in its caching allocator instead of returning them. After
+        loading/freeing a torch module, that cache is invisible to TRT, so a
+        build can OOM with gigabytes of reusable cache sitting idle. This only
+        releases unused blocks, so live modules and trace inputs are safe.
+        """
+        if self.device.type != "cuda":
+            return
+        gc.collect()
+        torch.cuda.empty_cache()
+
     def _init_tacotron(self, trt_tacotron_path: Path) -> None:
         """Load or compile the TRT Tacotron wrapper.
 
@@ -414,6 +389,7 @@ class TTSRunner:
         if not self.taco_trt:
             base_tacotron = self._load_tacotron_jit()
             _LOGGER.info("Compiling TRT tacotron...")
+            self._release_cuda_cache()
             try:
                 wrapper = torch.jit.script(_TacotronGenerate(base_tacotron, self.emb))
                 trt_mod = cast(
@@ -457,6 +433,7 @@ class TTSRunner:
         if not self.voco_trt:
             base_vocoder = torch.jit.load(str(vocoder_path), map_location=self.device)
             _LOGGER.info("Compiling TRT vocoder...")
+            self._release_cuda_cache()
             try:
                 trt_mod = cast(
                     Any,
