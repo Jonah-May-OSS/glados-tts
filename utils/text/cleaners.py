@@ -161,7 +161,7 @@ ENGLISH_CHECKPOINT = "en_us_cmudict_ipa_forward.pt"
 MULTILINGUAL_CHECKPOINT = "latin_ipa_forward.pt"
 
 # Languages routed through the English (cmudict) phonemizer + english_cleaners.
-_ENGLISH_LANGS = {"en", "en_us"}
+_english_langs = {"en", "en_us"}
 
 
 class Cleaner:
@@ -189,8 +189,8 @@ class Cleaner:
         self.device = device
         self.models_dir = models_dir
 
-        self.phonemizer = None
-        self._multilingual_phonemizer = None
+        self.phonemizer: Phonemizer | None = None
+        self._multilingual_phonemizer: Phonemizer | None = None
         if self.use_phonemes:
             ckpt = models_dir / ENGLISH_CHECKPOINT
             if not ckpt.is_file():
@@ -221,13 +221,15 @@ class Cleaner:
         accented characters are preserved for the phonemizer.
         """
         effective_lang = (lang or self.lang).replace("-", "_")
-        is_english = effective_lang in _ENGLISH_LANGS
+        is_english = effective_lang in _english_langs
 
         clean_func = self.clean_func if is_english else no_cleaners
         cleaned = clean_func(text)
 
         if self.use_phonemes:
             if is_english:
+                # self.phonemizer is always set when use_phonemes is True.
+                assert self.phonemizer is not None
                 phon = self.phonemizer(cleaned, lang="en_us")
             else:
                 phon = self._get_multilingual_phonemizer()(
