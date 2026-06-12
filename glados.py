@@ -535,15 +535,20 @@ class TTSRunner:
         back = (ctx_end - end) * hop
         return self._pcm_bytes(audio[front : audio.shape[-1] - back])
 
-    def run_tts_stream(self, text: str, alpha: float = 1.0) -> Iterator[bytes]:
+    def run_tts_stream(
+        self, text: str, alpha: float = 1.0, lang: str | None = None
+    ) -> Iterator[bytes]:
         """Synthesize text, yielding int16 PCM as the vocoder produces it.
 
         The mel-spectrogram is vocoded in windows (see VOCODER_CHUNK_FRAMES)
         so the first audio bytes are available before the whole utterance has
         been vocoded. The inference lock is held until the generator is
         exhausted or closed; consumers must drain or close it promptly.
+
+        ``lang`` selects the phonemizer language for this utterance (English
+        by default); non-English values route through the multilingual model.
         """
-        x = prepare_text(text, self.device, self.cleaner, self.tokenizer)
+        x = prepare_text(text, self.device, self.cleaner, self.tokenizer, lang=lang)
         # Timing (and the cuda sync needed to make it accurate) is opt-in:
         # either the instance was created with log=True or debug logging is
         # enabled.
@@ -579,9 +584,11 @@ class TTSRunner:
                     (time.time() - start_voc) * 1000,
                 )
 
-    def run_tts(self, text: str, alpha: float = 1.0) -> AudioSegment:
+    def run_tts(
+        self, text: str, alpha: float = 1.0, lang: str | None = None
+    ) -> AudioSegment:
         """Generate a full utterance audio segment with timing logs."""
-        pcm = b"".join(self.run_tts_stream(text, alpha))
+        pcm = b"".join(self.run_tts_stream(text, alpha, lang=lang))
         return AudioSegment(
             pcm,
             frame_rate=SAMPLE_RATE,

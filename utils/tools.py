@@ -40,6 +40,7 @@ def prepare_text(
     device: torch.device,
     cleaner: Cleaner,  # Pass pre-loaded cleaner
     tokenizer: Tokenizer,  # Pass pre-loaded tokenizer
+    lang: str | None = None,  # Override phonemizer language for this call
 ) -> torch.Tensor:
     """Normalize text and return a single-batch tensor of token IDs."""
     if not text:
@@ -48,6 +49,6 @@ def prepare_text(
         text += "."
     # pull from cache (phonemizer only initialized once)
 
-    cleaned = cleaner(text)
+    cleaned = cleaner(text, lang=lang)
     tokens = tokenizer(cleaned)
     return torch.as_tensor(tokens, dtype=torch.long, device=device).unsqueeze(0)

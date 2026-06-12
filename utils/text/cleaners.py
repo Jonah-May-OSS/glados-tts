@@ -154,8 +154,24 @@ def english_cleaners(text: str) -> str:
 # -----------------------------------------------------------------------------
 
 
+# Phonemizer checkpoint filenames.
+ENGLISH_CHECKPOINT = "en_us_cmudict_ipa_forward.pt"
+# DeepPhonemizer's multilingual "Latin IPA" model (en_us, en_uk, de, fr, es).
+# Used only for non-English requests so the English path stays byte-identical.
+MULTILINGUAL_CHECKPOINT = "latin_ipa_forward.pt"
+
+# Languages routed through the English (cmudict) phonemizer + english_cleaners.
+_ENGLISH_LANGS = {"en", "en_us"}
+
+
 class Cleaner:
-    """Configurable text cleaner/phonemizer."""
+    """Configurable text cleaner/phonemizer.
+
+    English requests use the original cmudict phonemizer and english_cleaners
+    so existing GLaDOS output is unchanged. Other languages are routed through
+    the multilingual "Latin IPA" checkpoint (loaded lazily on first use) with
+    no_cleaners, so accented characters survive to the phonemizer.
+    """
 
     def __init__(
         self,
@@ -171,18 +187,52 @@ class Cleaner:
         )
         self.use_phonemes = use_phonemes
         self.device = device
+        self.models_dir = models_dir
 
+        self.phonemizer = None
+        self._multilingual_phonemizer = None
         if self.use_phonemes:
-            ckpt = models_dir / "en_us_cmudict_ipa_forward.pt"
+            ckpt = models_dir / ENGLISH_CHECKPOINT
             if not ckpt.is_file():
                 raise FileNotFoundError(f"Phonemizer checkpoint not found at {ckpt}")
             self.phonemizer = Phonemizer.from_checkpoint(str(ckpt), device=self.device)
 
-    def __call__(self, text: str) -> str:
-        """Clean text and optionally phonemize it using configured language."""
-        cleaned = self.clean_func(text)
+    def _get_multilingual_phonemizer(self) -> Phonemizer:
+        """Lazily load the multilingual phonemizer on first non-English use."""
+        if self._multilingual_phonemizer is None:
+            ckpt = self.models_dir / MULTILINGUAL_CHECKPOINT
+            if not ckpt.is_file():
+                raise FileNotFoundError(
+                    f"Multilingual phonemizer checkpoint not found at {ckpt}. "
+                    "Run download.py to fetch it, or request an English voice."
+                )
+            _LOGGER.info("Loading multilingual phonemizer from %s", ckpt)
+            self._multilingual_phonemizer = Phonemizer.from_checkpoint(
+                str(ckpt), device=self.device
+            )
+        return self._multilingual_phonemizer
+
+    def __call__(self, text: str, lang: str | None = None) -> str:
+        """Clean text and optionally phonemize it.
+
+        ``lang`` overrides the instance default for this call (the multilingual
+        phonemizer selects its language per call). English keeps the original
+        cleaner + cmudict phonemizer; other languages skip english_cleaners so
+        accented characters are preserved for the phonemizer.
+        """
+        effective_lang = (lang or self.lang).replace("-", "_")
+        is_english = effective_lang in _ENGLISH_LANGS
+
+        clean_func = self.clean_func if is_english else no_cleaners
+        cleaned = clean_func(text)
+
         if self.use_phonemes:
-            phon = self.phonemizer(cleaned, lang=self.lang)
+            if is_english:
+                phon = self.phonemizer(cleaned, lang="en_us")
+            else:
+                phon = self._get_multilingual_phonemizer()(
+                    cleaned, lang=effective_lang
+                )
             cleaned = "".join(p for p in phon if p in phonemes_set)
         return cleaned
 
