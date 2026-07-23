@@ -483,7 +483,8 @@ class TTSRunner:
 
                 # Tacotron timing
                 start_taco = time.time()
-                mel_out = self._generate_mel(x, 1.0).to(self.device)
+                # _generate_mel already returns a tensor on self.device.
+                mel_out = self._generate_mel(x, 1.0)
                 _LOGGER.debug(
                     "Warmup Tacotron bucket %s took %.1f ms",
                     bucket,
@@ -511,7 +512,10 @@ class TTSRunner:
     def _pcm_bytes(audio_wave: torch.Tensor) -> bytes:
         """Convert a [-1, 1] float waveform tensor to int16 PCM bytes."""
         return (
+            # round() before int16 cast: astype truncates toward zero, adding a
+            # small negative quantization bias; rounding is nearest-sample.
             (audio_wave.float().clamp(-1.0, 1.0) * 32767.0)
+            .round()
             .cpu()
             .numpy()
             .astype("int16")
