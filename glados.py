@@ -467,7 +467,7 @@ class TTSRunner:
 
     def _warmup_models(self):
         _LOGGER.info("Priming TRT engines with a minimal dummy run…")
-        with torch.no_grad():
+        with torch.inference_mode():
             # 1) Tacotron dummy: “Warmup” text → minimal mel
             dummy_x = prepare_text("Warmup", self.device, self.cleaner, self.tokenizer)
             start = time.time()
@@ -476,7 +476,7 @@ class TTSRunner:
 
         # Now do your existing bucket warm-up:
         _LOGGER.info("Warming up with buckets: %s", BUCKET_SIZES)
-        with torch.no_grad():
+        with torch.inference_mode():
             for bucket in BUCKET_SIZES:
                 warmup_text = "Hello " * bucket
                 x = prepare_text(warmup_text, self.device, self.cleaner, self.tokenizer)
@@ -527,7 +527,7 @@ class TTSRunner:
         n_frames = mel.shape[-1]
         ctx_start = max(0, start - VOCODER_CONTEXT_FRAMES)
         ctx_end = min(n_frames, end + VOCODER_CONTEXT_FRAMES)
-        with torch.no_grad():
+        with torch.inference_mode():
             audio = cast(
                 torch.Tensor,
                 cast(Any, self.vocoder)(mel[:, :, ctx_start:ctx_end]),
@@ -555,7 +555,7 @@ class TTSRunner:
         with self._infer_lock:
             # Tacotron
 
-            with torch.no_grad():
+            with torch.inference_mode():
                 start_taco = time.time()
                 mel = self._generate_mel(x, alpha).float()
             n_frames = mel.shape[-1]
