@@ -134,13 +134,17 @@ def english_cleaners(text: str) -> str:
         flags=re.IGNORECASE,
     )
 
+    # Expand unit/honorific abbreviations BEFORE number expansion. The unit
+    # patterns match on a digit lookbehind, so they must run while digits are
+    # still present: "5 kg" → "5 kilograms" → (numbers) "five kilograms".
+    # Running numbers first stranded the unit ("five kg", lookbehind fails) or
+    # dropped the digit ("5kg" → "5 kilograms", then "5" never voiced).
+
+    text = expand_abbreviations(text)
+
     # Convert bare numbers → words
 
     text = normalize_numbers(text)
-
-    # Expand remaining abbreviations
-
-    text = expand_abbreviations(text)
 
     # Collapse whitespace
 
