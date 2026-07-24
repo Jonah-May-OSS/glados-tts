@@ -2,6 +2,7 @@
 
 import gc
 import logging
+import os
 import subprocess
 import sys
 import threading
@@ -388,6 +389,18 @@ class TTSRunner:
         self.taco_trt = self.glados_trt is not None
         if not self.taco_trt:
             base_tacotron = self._load_tacotron_jit()
+            if os.environ.get("GLADOS_TACOTRON_TRT", "0").lower() not in ("1", "true", "yes"):
+                # Tacotron TRT is opt-in and OFF by default. The autoregressive
+                # generate_jit graph does not lower to TensorRT (it raises
+                # "RuntimeError: Dimension out of range"), so compilation always
+                # failed and fell back to eager anyway -- while logging a
+                # scary ERROR on every boot and wasting ~5s. Skip the doomed
+                # compile and use the eager path directly. Set
+                # GLADOS_TACOTRON_TRT=1 to re-enable (e.g. if the export is
+                # fixed upstream).
+                self.glados = self._optimize_tacotron_jit(base_tacotron)
+                _LOGGER.info("Tacotron engine ready. TRT=False (compile disabled)")
+                return
             _LOGGER.info("Compiling TRT tacotron...")
             self._release_cuda_cache()
             try:
