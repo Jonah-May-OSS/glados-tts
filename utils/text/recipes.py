@@ -147,8 +147,9 @@ def read_pandas_format(path: Path) -> Tuple[Dict[str, str], Dict[str, str]]:
             "Please make sure that you set the correct path and metafile name!"
         )
     df = pd.read_csv(path, sep="\t", encoding="utf-8")
-    text_dict = pd.Series(df["text"].values, index=df["file_id"]).to_dict()
-    speaker_dict = pd.Series(df["speaker_id"].values, index=df["file_id"]).to_dict()
+    file_ids = [str(file_id) for file_id in df["file_id"]]
+    text_dict = dict(zip(file_ids, (str(text) for text in df["text"])))
+    speaker_dict = dict(zip(file_ids, (str(speaker) for speaker in df["speaker_id"])))
     return text_dict, speaker_dict
 
 
