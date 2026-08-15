@@ -2,6 +2,7 @@
 
 import gc
 import logging
+import os
 import subprocess
 import sys
 import threading
@@ -388,6 +389,18 @@ class TTSRunner:
         self.taco_trt = self.glados_trt is not None
         if not self.taco_trt:
             base_tacotron = self._load_tacotron_jit()
+            if os.environ.get("GLADOS_TACOTRON_TRT", "0").lower() not in ("1", "true", "yes"):
+                # Tacotron TRT is opt-in and OFF by default. The autoregressive
+                # generate_jit graph does not lower to TensorRT (it raises
+                # "RuntimeError: Dimension out of range"), so compilation always
+                # failed and fell back to eager anyway -- while logging a
+                # scary ERROR on every boot and wasting ~5s. Skip the doomed
+                # compile and use the eager path directly. Set
+                # GLADOS_TACOTRON_TRT=1 to re-enable (e.g. if the export is
+                # fixed upstream).
+                self.glados = self._optimize_tacotron_jit(base_tacotron)
+                _LOGGER.info("Tacotron engine ready. TRT=False (compile disabled)")
+                return
             _LOGGER.info("Compiling TRT tacotron...")
             self._release_cuda_cache()
             try:
@@ -467,7 +480,7 @@ class TTSRunner:
 
     def _warmup_models(self):
         _LOGGER.info("Priming TRT engines with a minimal dummy run…")
-        with torch.no_grad():
+        with torch.inference_mode():
             # 1) Tacotron dummy: “Warmup” text → minimal mel
             dummy_x = prepare_text("Warmup", self.device, self.cleaner, self.tokenizer)
             start = time.time()
@@ -476,14 +489,15 @@ class TTSRunner:
 
         # Now do your existing bucket warm-up:
         _LOGGER.info("Warming up with buckets: %s", BUCKET_SIZES)
-        with torch.no_grad():
+        with torch.inference_mode():
             for bucket in BUCKET_SIZES:
                 warmup_text = "Hello " * bucket
                 x = prepare_text(warmup_text, self.device, self.cleaner, self.tokenizer)
 
                 # Tacotron timing
                 start_taco = time.time()
-                mel_out = self._generate_mel(x, 1.0).to(self.device)
+                # _generate_mel already returns a tensor on self.device.
+                mel_out = self._generate_mel(x, 1.0)
                 _LOGGER.debug(
                     "Warmup Tacotron bucket %s took %.1f ms",
                     bucket,
@@ -511,7 +525,10 @@ class TTSRunner:
     def _pcm_bytes(audio_wave: torch.Tensor) -> bytes:
         """Convert a [-1, 1] float waveform tensor to int16 PCM bytes."""
         return (
+            # round() before int16 cast: astype truncates toward zero, adding a
+            # small negative quantization bias; rounding is nearest-sample.
             (audio_wave.float().clamp(-1.0, 1.0) * 32767.0)
+            .round()
             .cpu()
             .numpy()
             .astype("int16")
@@ -523,7 +540,7 @@ class TTSRunner:
         n_frames = mel.shape[-1]
         ctx_start = max(0, start - VOCODER_CONTEXT_FRAMES)
         ctx_end = min(n_frames, end + VOCODER_CONTEXT_FRAMES)
-        with torch.no_grad():
+        with torch.inference_mode():
             audio = cast(
                 torch.Tensor,
                 cast(Any, self.vocoder)(mel[:, :, ctx_start:ctx_end]),
@@ -551,7 +568,7 @@ class TTSRunner:
         with self._infer_lock:
             # Tacotron
 
-            with torch.no_grad():
+            with torch.inference_mode():
                 start_taco = time.time()
                 mel = self._generate_mel(x, alpha).float()
             n_frames = mel.shape[-1]
